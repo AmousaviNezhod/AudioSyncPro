@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ExtensionManifest xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    Version="10.0"
+    ExtensionBundleId="com.lutcodex.audiosyncpro"
+    ExtensionBundleVersion="1.0.0"
+    ExtensionBundleName="Audio Sync Pro">
+    <Author>AmousaviNezhod</Author>
+    <ExtensionList>
+        <Extension Id="com.lutcodex.audiosyncpro.panel" Version="1.0.0"/>
+    </ExtensionList>
+    <ExecutionEnvironment>
+        <HostList>
+            <Host Name="PPRO" Version="13.0"/>
+        </HostList>
+        <LocaleList>
+            <Locale Code="All"/>
+        </LocaleList>
+        <RequiredRuntimeList>
+            <RequiredRuntime Name="CSXS" Version="10.0"/>
+        </RequiredRuntimeList>
+    </ExecutionEnvironment>
+    <DispatchInfoList>
+        <Extension Id="com.lutcodex.audiosyncpro.panel">
+            <DispatchInfo>
+                <Resources>
+                    <MainPath>./index.html</MainPath>
+                    <ScriptPath>./jsx/host.jsx</ScriptPath>
+                </Resources>
+                <Lifecycle>
+                    <AutoVisible>true</AutoVisible>
+                </Lifecycle>
+                <UI>
+                    <Type>Panel</Type>
+                    <Menu>Audio Sync Pro</Menu>
+                    <Geometry>
+                        <Size>
+                            <Width>360</Width>
+                            <Height>620</Height>
+                        </Size>
+                        <MinSize>
+                            <Width>300</Width>
+                            <Height>420</Height>
+                        </MinSize>
+                        <MaxSize>
+                            <Width>1200</Width>
+                            <Height>1200</Height>
+                        </MaxSize>
+                    </Geometry>
+                </UI>
+                <CEFCommandLine>
+                    <Parameter>--enable-nodejs</Parameter>
+                    <Parameter>--mixed-context</Parameter>
+                    <Parameter>--allow-file-access-from-files</Parameter>
+                </CEFCommandLine>
+            </DispatchInfo>
+        </Extension>
+    </DispatchInfoList>
+</ExtensionManifest>

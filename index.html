@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audio Sync Pro</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div class="app">
+        <header class="app-header">
+            <div class="brand">
+                <span class="brand-icon">◈</span>
+                <span>Audio Sync Pro</span>
+            </div>
+            <div class="brand-sub">سینک خودکار صدا</div>
+        </header>
+
+        <main class="app-body">
+            <section class="panel-section">
+                <div class="section-title">تنظیمات ffmpeg</div>
+                <div class="input-group">
+                    <label for="ffmpegPath">مسیر ffmpeg (اختیاری)</label>
+                    <input id="ffmpegPath" class="text-input" type="text" placeholder="ffmpeg">
+                    <div class="input-hint">اگر ffmpeg در PATH نیست، مسیر فایل اجرایی را وارد کنید.</div>
+                </div>
+                <div class="input-row">
+                    <div class="input-group half">
+                        <label for="sampleRate">نرخ نمونه‌برداری</label>
+                        <select id="sampleRate" class="select-input">
+                            <option value="8000">8 kHz</option>
+                            <option value="16000" selected>16 kHz</option>
+                            <option value="22050">22.05 kHz</option>
+                        </select>
+                    </div>
+                    <div class="input-group half">
+                        <label for="sampleSeconds">مدت نمونه (ثانیه)</label>
+                        <input id="sampleSeconds" class="text-input" type="number" min="5" max="120" value="30">
+                    </div>
+                </div>
+            </section>
+
+            <section class="panel-section">
+                <div class="section-title">عملیات</div>
+                <div class="option-list">
+                    <label class="option-item">
+                        <input id="placeOnTracks" type="checkbox" checked>
+                        <span class="checkmark"></span>
+                        <span class="option-label">قرار دادن لایه‌ها در ترک‌های جداگانه</span>
+                    </label>
+                    <label class="option-item">
+                        <input id="normalizeAudio" type="checkbox" checked>
+                        <span class="checkmark"></span>
+                        <span class="option-label">نرمالایز خودکار صدا</span>
+                    </label>
+                    <label class="option-item">
+                        <input id="lockToReference" type="checkbox" checked>
+                        <span class="checkmark"></span>
+                        <span class="option-label">سینک نسبت به اولین کلیپ انتخاب‌شده</span>
+                    </label>
+                </div>
+                <div class="input-row">
+                    <div class="input-group half">
+                        <label for="targetPeak">هدف نرمالایز (dBFS)</label>
+                        <input id="targetPeak" class="text-input" type="number" step="0.5" value="-1.0">
+                    </div>
+                    <div class="input-group half">
+                        <label for="maxOffset">حداکثر آفست (ثانیه)</label>
+                        <input id="maxOffset" class="text-input" type="number" step="0.5" value="10.0">
+                    </div>
+                </div>
+            </section>
+
+            <section class="panel-section actions">
+                <button id="analyzeBtn" class="btn btn-primary btn-block">
+                    <span class="btn-icon">▶</span>
+                    <span>سینک و نرمالایز</span>
+                </button>
+                <button id="normalizeOnlyBtn" class="btn btn-secondary btn-block">
+                    <span class="btn-icon">∿</span>
+                    <span>فقط نرمالایز</span>
+                </button>
+            </section>
+
+            <section class="panel-section progress-panel" id="progressPanel" style="display: none;">
+                <div class="progress-header">
+                    <span id="progressLabel">آماده</span>
+                    <span id="progressPercent">0%</span>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progressFill" style="width: 0%"></div>
+                </div>
+            </section>
+
+            <section class="panel-section log-panel">
+                <div class="section-title">رویدادها</div>
+                <div id="logOutput" class="log-output"></div>
+            </section>
+        </main>
+
+        <footer class="app-footer">
+            <div id="status" class="status">آماده</div>
+        </footer>
+    </div>
+
+    <!-- Adobe libs -->
+    <script src="libs/CSInterface.js"></script>
+    <script src="libs/Vulcan.js"></script>
+
+    <!-- Core modules -->
+    <script src="js/ui.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html>
