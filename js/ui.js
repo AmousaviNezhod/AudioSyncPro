@@ -12,7 +12,7 @@ var AudioSyncProUI = (function () {
                 sampleSeconds: document.getElementById("sampleSeconds"),
                 placeOnTracks: document.getElementById("placeOnTracks"),
                 normalizeAudio: document.getElementById("normalizeAudio"),
-                lockToReference: document.getElementById("lockToReference"),
+                matchThreshold: document.getElementById("matchThreshold"),
                 targetPeak: document.getElementById("targetPeak"),
                 maxOffset: document.getElementById("maxOffset"),
                 analyzeBtn: document.getElementById("analyzeBtn"),
@@ -73,7 +73,7 @@ var AudioSyncProUI = (function () {
             sampleSeconds: parseFloat(e.sampleSeconds.value) || 30,
             placeOnTracks: e.placeOnTracks.checked,
             normalizeAudio: e.normalizeAudio.checked,
-            lockToReference: e.lockToReference.checked,
+            matchThreshold: parseFloat(e.matchThreshold.value) || 0.45,
             targetPeak: parseFloat(e.targetPeak.value) || -1.0,
             maxOffset: parseFloat(e.maxOffset.value) || 10.0
         };

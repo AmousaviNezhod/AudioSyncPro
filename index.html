@@ -53,11 +53,8 @@
                         <span class="checkmark"></span>
                         <span class="option-label">نرمالایز خودکار صدا</span>
                     </label>
-                    <label class="option-item">
-                        <input id="lockToReference" type="checkbox" checked>
-                        <span class="checkmark"></span>
-                        <span class="option-label">سینک نسبت به اولین کلیپ انتخاب‌شده</span>
-                    </label>
+                    <label class="option-item" for="matchThreshold">آستانه شباهت (0 تا 1)</label>
+                    <input id="matchThreshold" class="text-input" type="number" min="0.1" max="1" step="0.05" value="0.45">
                 </div>
                 <div class="input-row">
                     <div class="input-group half">

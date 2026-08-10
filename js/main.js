@@ -182,21 +182,27 @@
             }
 
             SyncEngine.analyzeClips(clips, settings, function (percent, label) {
-                AudioSyncProUI.setProgress(percent * 0.6, label);
+                AudioSyncProUI.setProgress(percent * 0.5, label);
                 log(label, "info");
             }).then(function (results) {
-                AudioSyncProUI.setProgress(60, "محاسبه آفست‌ها");
-                var offsets = SyncEngine.computeOffsets(results, settings, function (percent, label) {
-                    AudioSyncProUI.setProgress(60 + percent * 0.2, label);
+                AudioSyncProUI.setProgress(50, "خوشه‌بندی کلیپ‌ها");
+                var groupsObj = SyncEngine.findGroups(results, settings, function (percent, label) {
+                    AudioSyncProUI.setProgress(50 + percent * 0.2, label);
                     log(label, "info");
                 });
 
-                log("آفست‌ها محاسبه شد:", "info");
-                for (var i = 0; i < offsets.length; i++) {
-                    log("  " + results[i].name + " -> " + offsets[i].offsetSeconds.toFixed(4) + "s (confidence " + (offsets[i].confidence * 100).toFixed(1) + "%)");
+                log("گروه‌های سینک شناسایی شد:", "info");
+                for (var g = 0; g < groupsObj.groups.length; g++) {
+                    var grp = groupsObj.groups[g];
+                    var names = grp.members.map(function (m) { return results[m.index].name; });
+                    log("  گروه " + (g + 1) + ": " + names.join(", "));
+                }
+                if (groupsObj.orphans.length > 0) {
+                    var orphanNames = groupsObj.orphans.map(function (idx) { return results[idx].name; });
+                    log("  بدون سینک: " + orphanNames.join(", "));
                 }
 
-                var plan = SyncEngine.buildPlan(results, offsets, settings);
+                var plan = SyncEngine.buildPlan(results, groupsObj, settings);
                 AudioSyncProUI.setProgress(80, "اعمال روی تایم‌لاین");
                 callHost("host.applyPlan", { operations: plan.operations }, function (res) {
                     AudioSyncProUI.setBusy(false);

@@ -162,12 +162,45 @@ var AudioUtils = AudioUtils || {};
             }
         }
 
+        // Compute a true Pearson correlation on the overlapping window at the best lag
+        // so peakValue is a normalized confidence in [-1, 1].
+        var bestPearson = pearsonCorrelationAtLag(refSamples, targetSamples, bestI <= maxLagSamples ? bestI : bestI - n);
+        if (bestPearson < 0) bestPearson = 0;
+
         return {
             peakLagSamples: k,
-            peakValue: bestVal,
+            peakValue: bestPearson,
             offsetSeconds: k / sampleRate,
             sampleRate: sampleRate
         };
+    }
+
+    function pearsonCorrelationAtLag(ref, target, lag) {
+        var startRef = Math.max(0, -lag);
+        var startTgt = Math.max(0, lag);
+        var end = Math.min(ref.length, target.length - lag);
+        if (end <= startRef) return 0;
+        var count = end - startRef;
+        if (count <= 1) return 0;
+
+        var sumRef = 0, sumTgt = 0;
+        for (var i = 0; i < count; i++) {
+            sumRef += ref[startRef + i];
+            sumTgt += target[startTgt + i];
+        }
+        var meanRef = sumRef / count;
+        var meanTgt = sumTgt / count;
+
+        var num = 0, denRef = 0, denTgt = 0;
+        for (var i = 0; i < count; i++) {
+            var a = ref[startRef + i] - meanRef;
+            var b = target[startTgt + i] - meanTgt;
+            num += a * b;
+            denRef += a * a;
+            denTgt += b * b;
+        }
+        if (denRef === 0 || denTgt === 0) return 0;
+        return num / Math.sqrt(denRef * denTgt);
     }
 
     function normalizeSignal(samples) {

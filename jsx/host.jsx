@@ -79,6 +79,20 @@ var host = host || {};
         return 0;
     }
 
+    function getClipDurationSeconds(clip) {
+        try {
+            var start = parseFloat(clip.start.seconds);
+            var end = parseFloat(clip.end.seconds);
+            if (!isNaN(end - start)) return end - start;
+        } catch (e) {}
+        try {
+            var inPoint = parseFloat(clip.inPoint.seconds);
+            var outPoint = parseFloat(clip.outPoint.seconds);
+            if (!isNaN(outPoint - inPoint)) return outPoint - inPoint;
+        } catch (e) {}
+        return 0;
+    }
+
     /**
      * Get selected clips info from the active sequence.
      */
@@ -132,6 +146,7 @@ var host = host || {};
                 name: name,
                 mediaPath: getClipPath(clip),
                 startSeconds: getClipStartSeconds(clip),
+                durationSeconds: getClipDurationSeconds(clip),
                 trackIndex: trackIndex,
                 clipIndex: clipIndex,
                 isAudio: isAudio
