@@ -65,6 +65,32 @@ def log(msg):
     print(msg, file=sys.stderr)
 
 
+def get_bundle_ffmpeg_path():
+    """Return the path to a bundled ffmpeg binary if present."""
+    # When running from a PyInstaller build, sys.executable is the .exe file.
+    base_candidates = []
+    if getattr(sys, "frozen", False):
+        base_candidates.append(os.path.dirname(sys.executable))
+    if __file__:
+        base_candidates.append(os.path.dirname(os.path.abspath(__file__)))
+    for base in base_candidates:
+        candidate = os.path.join(base, "bin", "ffmpeg.exe")
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def resolve_ffmpeg_path(settings):
+    """Pick the ffmpeg binary: explicit setting, bundled binary, or PATH."""
+    explicit = (settings or {}).get("ffmpegPath", "")
+    if explicit and explicit.strip():
+        return explicit.strip()
+    bundled = get_bundle_ffmpeg_path()
+    if bundled:
+        return bundled
+    return "ffmpeg"
+
+
 def next_power_of_two(n):
     if n < 1:
         return 1
@@ -524,7 +550,7 @@ def build_plan(results, groups_obj, settings):
 
 def run_normalize(clips, settings):
     """Analyze clips and return gain operations only."""
-    ffmpeg_path = settings.get("ffmpegPath", "ffmpeg")
+    ffmpeg_path = resolve_ffmpeg_path(settings)
     norm_settings = dict(settings)
     norm_settings["normalizeAudio"] = True
     results = analyze_clips(ffmpeg_path, clips, norm_settings)
@@ -545,7 +571,7 @@ def run_normalize(clips, settings):
 
 
 def run_sync(clips, settings):
-    ffmpeg_path = settings.get("ffmpegPath", "ffmpeg")
+    ffmpeg_path = resolve_ffmpeg_path(settings)
     results = analyze_clips(ffmpeg_path, clips, settings)
     groups_obj = find_groups(results, settings)
     return build_plan(results, groups_obj, settings)
