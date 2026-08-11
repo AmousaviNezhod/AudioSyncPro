@@ -234,6 +234,62 @@ var host = host || {};
     };
 
     /**
+     * Ensure the sequence has enough tracks for the planned operations.
+     * Uses QE DOM if available, which is officially unsupported but widely used.
+     */
+    function ensureTracksAvailable(seq, operations) {
+        try {
+            var maxVideoTrack = -1, maxAudioTrack = -1;
+            for (var i = 0; i < operations.length; i++) {
+                var op = operations[i];
+                if (op.type !== "move" || typeof op.newTrackIndex !== "number") continue;
+                var isAudio = op.isAudio === true;
+                if (isAudio) {
+                    if (op.newTrackIndex > maxAudioTrack) maxAudioTrack = op.newTrackIndex;
+                } else {
+                    if (op.newTrackIndex > maxVideoTrack) maxVideoTrack = op.newTrackIndex;
+                }
+            }
+            if (maxVideoTrack < 0 && maxAudioTrack < 0) return true;
+
+            var numVideo = seq.videoTracks.numTracks;
+            var numAudio = seq.audioTracks.numTracks;
+            var needVideo = Math.max(0, maxVideoTrack - numVideo + 1);
+            var needAudio = Math.max(0, maxAudioTrack - numAudio + 1);
+            if (needVideo === 0 && needAudio === 0) return true;
+
+            app.enableQE();
+            var qeSeq = null;
+            if (qe && qe.project) {
+                try { qeSeq = qe.project.getActiveSequence(); } catch (e) {}
+                if (!qeSeq) try { qeSeq = qe.project.getActiveSequence(0); } catch (e) {}
+            }
+            if (!qeSeq) return false;
+
+            // Try the common QE addTracks signature:
+            // addTracks(numVideo, videoAfterIndex, numAudio, audioAfterIndex, ...)
+            try {
+                qeSeq.addTracks(needVideo, numVideo, needAudio, numAudio);
+            } catch (e) {
+                // If that fails, try the documented 8-argument form.
+                try {
+                    qeSeq.addTracks(needVideo, numVideo, 0, 0, needAudio, 0, 0, numAudio);
+                } catch (e2) {
+                    return false;
+                }
+            }
+
+            // Verify tracks were added.
+            if (seq.videoTracks.numTracks >= maxVideoTrack + 1 && seq.audioTracks.numTracks >= maxAudioTrack + 1) {
+                return true;
+            }
+            return false;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    /**
      * Apply a plan of move and gain operations.
      * plan JSON array of operations.
      */
@@ -249,6 +305,10 @@ var host = host || {};
         }
         if (!plan || !plan.operations || plan.operations.length === 0) {
             return error("Plan is empty");
+        }
+
+        if (!ensureTracksAvailable(seq, plan.operations)) {
+            return error("Sequence does not have enough tracks for the sync result. Add more video/audio tracks and try again.");
         }
 
         var moved = 0;
