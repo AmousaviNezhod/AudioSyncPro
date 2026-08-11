@@ -30,6 +30,7 @@ settings fields:
 """
 
 import collections
+import datetime
 import json
 import math
 import os
@@ -37,6 +38,7 @@ import re
 import struct
 import subprocess
 import sys
+import threading
 import traceback
 
 try:
@@ -46,10 +48,83 @@ except Exception:
     HAS_NUMPY = False
 
 
+_log_lock = threading.Lock()
+_log_file_handle = None
+
+
+def _log_file_path():
+    """Pick a writable log path for when sys.stderr is unavailable (e.g. --noconsole)."""
+    candidates = []
+    app_data = os.path.expandvars(r"%APPDATA%\AudioSyncPro")
+    if app_data and "%APPDATA%" not in app_data:
+        candidates.append(app_data)
+    tmp = os.environ.get("TEMP")
+    if tmp:
+        candidates.append(os.path.join(tmp, "AudioSyncPro"))
+    if getattr(sys, "frozen", False):
+        candidates.append(os.path.dirname(sys.executable))
+    if __file__:
+        candidates.append(os.path.dirname(os.path.abspath(__file__)))
+    for base in candidates:
+        try:
+            if not os.path.isdir(base):
+                os.makedirs(base, exist_ok=True)
+            return os.path.join(base, "sync_bridge.log")
+        except Exception:
+            pass
+    return None
+
+
+def _open_log_file():
+    global _log_file_handle
+    if _log_file_handle is not None:
+        return _log_file_handle
+    path = _log_file_path()
+    if not path:
+        return None
+    try:
+        _log_file_handle = open(path, "a", encoding="utf-8")
+    except Exception:
+        _log_file_handle = None
+    return _log_file_handle
+
+
+def _safe_stream(name, fd):
+    """Return a text stream for stdio file descriptor, or None."""
+    stream = getattr(sys, name)
+    if stream is not None:
+        return stream
+    fallback = getattr(sys, "__" + name + "__")
+    if fallback is not None:
+        return fallback
+    try:
+        import msvcrt
+        handle = msvcrt.get_osfhandle(fd)
+        return os.fdopen(fd, "w" if name != "stdin" else "r", encoding="utf-8", closefd=False)
+    except Exception:
+        pass
+    return None
+
+
 def log(msg):
-    """Mirror the same stderr/stdout logging so JS can capture errors."""
-    print(msg, file=sys.stderr)
-    sys.stderr.flush()
+    """Log to stderr if available, otherwise to a file, otherwise silently."""
+    line = "[{}] {}".format(datetime.datetime.now().strftime("%H:%M:%S"), msg)
+    with _log_lock:
+        stderr = _safe_stream("stderr", 2)
+        if stderr is not None:
+            try:
+                print(line, file=stderr)
+                stderr.flush()
+                return
+            except Exception:
+                pass
+        f = _open_log_file()
+        if f is not None:
+            try:
+                f.write(line + "\n")
+                f.flush()
+            except Exception:
+                pass
 
 
 def get_bundle_ffmpeg_path():
@@ -803,7 +878,14 @@ def process_request(request):
 def run_server():
     """Read JSON requests from stdin, write JSON responses to stdout, one per line."""
     log("server started")
-    stdin = sys.stdin if sys.stdin else open(sys.__stdin__.fileno(), "r", encoding="utf-8")
+    stdin = _safe_stream("stdin", 0)
+    stdout = _safe_stream("stdout", 1)
+    if stdin is None:
+        log("server cannot access stdin; exiting")
+        return
+    if stdout is None:
+        log("server cannot access stdout; exiting")
+        return
     try:
         for line in stdin:
             line = line.strip()
@@ -819,10 +901,11 @@ def run_server():
             except Exception as e:
                 traceback.print_exc()
                 response = {"success": False, "error": str(e)}
-            sys.stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
-            sys.stdout.flush()
+            stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
+            stdout.flush()
     except Exception as e:
         log("server error: " + str(e))
+        traceback.print_exc()
     log("server exiting")
 
 

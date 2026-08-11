@@ -3,8 +3,8 @@
  *
  * A compiled Python server is launched once via window.cep.process and kept
  * alive in the background. Requests are sent as JSON lines over stdin and
- * responses are read as JSON lines from stdout. This avoids spawning a new
- * process (and a new console) for every sync/normalize operation.
+ * responses are read as JSON lines from stdout. The executable is built as a
+ * Windows GUI subsystem app so no console window is shown.
  */
 (function () {
     var cs = null;
@@ -22,7 +22,8 @@
         stderrBuffer: "",
         pending: null,
         requestCounter: 0,
-        workDir: ""
+        startCallbacks: [],
+        startTimeout: null
     };
 
     function initRuntime() {
@@ -66,6 +67,16 @@
         return true;
     }
 
+    function toNativePath(p) {
+        if (!p) return p;
+        var os = "";
+        try { os = cs.getOSInformation(); } catch (e) {}
+        if (os && os.indexOf("Windows") !== -1) {
+            return p.replace(/\//g, "\\");
+        }
+        return p.replace(/\\/g, "/");
+    }
+
     function getHostJsxPath() {
         if (!cs) return "";
         try {
@@ -77,45 +88,18 @@
         }
     }
 
-    function toNativePath(p) {
-        if (!p) return p;
-        var os = "";
-        try {
-            os = cs.getOSInformation();
-        } catch (e) {}
-        if (os && os.indexOf("Windows") !== -1) {
-            return p.replace(/\//g, "\\");
-        }
-        return p.replace(/\\/g, "/");
-    }
-
-    function getWorkDir() {
-        var base = cs.getSystemPath(SystemPath.USER_DATA);
-        if (!base) base = cs.getSystemPath(SystemPath.EXTENSION);
-        return toNativePath(base.replace(/\/$/, "")) + toNativePath("/AudioSyncPro");
-    }
-
-    function writeFileSafe(path, content) {
-        var res = fs.writeFile(path, content, window.cep.encoding.UTF8);
-        if (res.err !== fs.NO_ERROR) {
-            throw new Error("writeFile failed (" + res.err + ") for " + path);
-        }
+    function getBridgePath() {
+        var extBase = cs.getSystemPath(SystemPath.EXTENSION).replace(/\/$/, "");
+        var exePath = toNativePath(extBase + "/python/dist/sync_bridge.exe");
+        return { exePath: exePath };
     }
 
     function readFileSafe(path) {
         var res = fs.readFile(path, window.cep.encoding.UTF8);
-        if (res.err !== fs.NO_ERROR) {
+        if (res.err !== 0) {
             throw new Error("readFile failed (" + res.err + ") for " + path);
         }
         return res.data;
-    }
-
-    function ensureWorkDir() {
-        var dir = getWorkDir();
-        try {
-            fs.makedir(dir);
-        } catch (e) {}
-        return dir;
     }
 
     function loadHostJsx(callback) {
@@ -126,7 +110,7 @@
             return callback(false);
         }
         var res = fs.readFile(jsxPath, window.cep.encoding.UTF8);
-        if (res.err !== fs.NO_ERROR) {
+        if (res.err !== 0) {
             AudioSyncProUI.setStatus("Could not load JSX bridge: " + jsxPath, "error");
             return callback(false);
         }
@@ -193,14 +177,11 @@
         return true;
     }
 
-    function getBridgePath() {
-        var extBase = cs.getSystemPath(SystemPath.EXTENSION).replace(/\/$/, "");
-        var exePath = toNativePath(extBase + "/python/dist/sync_bridge.exe");
-        var scriptPath = toNativePath(extBase + "/python/sync_bridge.py");
-        return { exePath: exePath, scriptPath: scriptPath };
-    }
+    // === Bridge server management ===
 
-    function flushStdoutBuffer() {
+    function onServerStdout(chunk) {
+        if (chunk === null || chunk === undefined) return;
+        server.stdoutBuffer += chunk;
         var lines = server.stdoutBuffer.split("\n");
         server.stdoutBuffer = lines.pop();
         for (var i = 0; i < lines.length; i++) {
@@ -214,10 +195,10 @@
                     server.pending = null;
                     cb(resp);
                 } else {
-                    log("Unexpected server response", "warn");
+                    log("پاسخ غیرمنتظره از موتور: " + line.substring(0, 80), "warn");
                 }
             } catch (e) {
-                log("Bad server JSON: " + line.substring(0, 80), "warn");
+                log("خروجی نامعتبر از موتور: " + line.substring(0, 80), "warn");
             }
         }
     }
@@ -229,93 +210,106 @@
         server.stderrBuffer = lines.pop();
         for (var i = 0; i < lines.length; i++) {
             var line = lines[i].trim();
-            if (line) log("[server] " + line, "info");
+            if (!line) continue;
+            log("[موتور] " + line, "info");
+            if (!server.ready && line.indexOf("server started") !== -1) {
+                markServerReady(true);
+            }
         }
     }
 
-    function onServerStdout(chunk) {
-        if (chunk === null || chunk === undefined) return;
-        server.stdoutBuffer += chunk;
-        flushStdoutBuffer();
+    function onServerQuit() {
+        if (server.ready) {
+            log("موتور بسته شد", "warn");
+        }
+        markServerReady(false);
+        if (server.pending) {
+            var cb = server.pending.callback;
+            server.pending = null;
+            cb({ success: false, error: "Bridge server quit unexpectedly" });
+        }
+    }
+
+    function markServerReady(ready) {
+        if (ready) {
+            if (server.startTimeout) {
+                clearTimeout(server.startTimeout);
+                server.startTimeout = null;
+            }
+            server.ready = true;
+            server.starting = false;
+            AudioSyncProUI.setDot("ready");
+            var cbs = server.startCallbacks;
+            server.startCallbacks = [];
+            for (var i = 0; i < cbs.length; i++) {
+                cbs[i](true);
+            }
+        } else {
+            server.ready = false;
+            server.starting = false;
+            server.pid = null;
+            AudioSyncProUI.setDot("");
+        }
+    }
+
+    function failStart(message) {
+        if (server.startTimeout) {
+            clearTimeout(server.startTimeout);
+            server.startTimeout = null;
+        }
+        log("شروع موتور ناموفق: " + message, "error");
+        if (server.pid !== null) {
+            try { processApi.terminate(server.pid); } catch (e) {}
+            server.pid = null;
+        }
+        server.starting = false;
+        server.ready = false;
+        AudioSyncProUI.setDot("error");
+        var cbs = server.startCallbacks;
+        server.startCallbacks = [];
+        for (var i = 0; i < cbs.length; i++) {
+            cbs[i](false);
+        }
     }
 
     function startServer(callback) {
-        if (server.starting) return;
         if (server.ready && server.pid !== null) {
             return callback(true);
         }
+        if (server.starting) {
+            server.startCallbacks.push(callback);
+            return;
+        }
 
-        // Reset state if restarting.
+        // Kill any stale process.
         if (server.pid !== null) {
-            try {
-                processApi.terminate(server.pid);
-            } catch (e) {}
+            try { processApi.terminate(server.pid); } catch (e) {}
             server.pid = null;
         }
         server.starting = true;
+        server.ready = false;
         server.stdoutBuffer = "";
         server.stderrBuffer = "";
         server.pending = null;
+        server.startCallbacks = [callback];
 
-        var os = "";
-        try {
-            os = cs.getOSInformation();
-        } catch (e) {}
-        var isWindows = os.indexOf("Windows") !== -1;
         var paths = getBridgePath();
-        var pythonPath = toNativePath("python");
+        log("در حال راه‌اندازی موتور...", "info");
 
-        function trySpawn(executable, args, onFail) {
-            var callArgs = [executable].concat(args);
-            var procRes = processApi.createProcess.apply(processApi, callArgs);
-            if (procRes.err !== 0) {
-                if (onFail) return onFail();
-                server.starting = false;
-                callback(false);
-                return;
-            }
-            server.pid = procRes.data;
-            try {
-                processApi.stdout(server.pid, onServerStdout);
-            } catch (e) {}
-            try {
-                processApi.stderr(server.pid, onServerStderr);
-            } catch (e) {}
-
-            // Wait briefly for the server to initialize, then mark ready.
-            setTimeout(function () {
-                var running = processApi.isRunning(server.pid);
-                if (running.err === 0 && running.data) {
-                    server.starting = false;
-                    server.ready = true;
-                    callback(true);
-                } else {
-                    server.starting = false;
-                    server.ready = false;
-                    try {
-                        processApi.terminate(server.pid);
-                    } catch (e2) {}
-                    server.pid = null;
-                    if (onFail) return onFail();
-                    callback(false);
-                }
-            }, 250);
+        var procRes = processApi.createProcess(paths.exePath, "--server");
+        if (procRes.err !== 0) {
+            return failStart("createProcess returned error " + procRes.err + " for " + paths.exePath);
         }
 
-        if (isWindows) {
-            trySpawn(paths.exePath, ["--server"], function () {
-                log("Compiled bridge failed, trying Python script", "warn");
-                trySpawn(pythonPath, [paths.scriptPath, "--server"], function () {
-                    server.starting = false;
-                    callback(false);
-                });
-            });
-        } else {
-            trySpawn(pythonPath, [paths.scriptPath, "--server"], function () {
-                server.starting = false;
-                callback(false);
-            });
-        }
+        server.pid = procRes.data;
+        try { processApi.stdout(server.pid, onServerStdout); } catch (e) {}
+        try { processApi.stderr(server.pid, onServerStderr); } catch (e) {}
+        try { processApi.onquit(server.pid, onServerQuit); } catch (e) {}
+
+        // If we do not see the "server started" line within 6 seconds, give up.
+        server.startTimeout = setTimeout(function () {
+            failStart("server did not report ready in time");
+        }, 6000);
     }
 
     function sendRequest(request, callback) {
@@ -346,16 +340,17 @@
         }
     }
 
-    function runPythonBridge(op, clips, settings, callback) {
-        server.workDir = ensureWorkDir();
+    function callEngine(op, clips, settings, callback) {
         startServer(function (ok) {
             if (!ok) {
-                callback({ success: false, error: "Could not start bridge server" });
+                callback({ success: false, error: "Could not start audio engine" });
                 return;
             }
             sendRequest({ op: op, clips: clips, settings: settings }, callback);
         });
     }
+
+    // === Workflow ===
 
     function runSync(settings) {
         if (!ensureRuntime()) return;
@@ -377,14 +372,14 @@
 
             AudioSyncProUI.setProgress(30, "تحلیل صدا در Python...");
 
-            runPythonBridge("sync", clips, settings, function (resp) {
+            callEngine("sync", clips, settings, function (resp) {
                 AudioSyncProUI.setProgress(80, "اعمال روی تایم‌لاین");
 
                 if (!resp.success) {
                     AudioSyncProUI.setBusy(false);
                     AudioSyncProUI.hideProgress();
-                    AudioSyncProUI.setStatus(resp.error || "خطا در Python", "error");
-                    log(resp.error || "خطا در Python", "error");
+                    AudioSyncProUI.setStatus(resp.error || "خطا در موتور", "error");
+                    log(resp.error || "خطا در موتور", "error");
                     return;
                 }
 
@@ -425,14 +420,14 @@
 
             AudioSyncProUI.setProgress(30, "تحلیل صدا در Python...");
 
-            runPythonBridge("normalize", clips, settings, function (resp) {
+            callEngine("normalize", clips, settings, function (resp) {
                 AudioSyncProUI.setProgress(80, "اعمال نرمالایز");
 
                 if (!resp.success) {
                     AudioSyncProUI.setBusy(false);
                     AudioSyncProUI.hideProgress();
-                    AudioSyncProUI.setStatus(resp.error || "خطا در Python", "error");
-                    log(resp.error || "خطا در Python", "error");
+                    AudioSyncProUI.setStatus(resp.error || "خطا در موتور", "error");
+                    log(resp.error || "خطا در موتور", "error");
                     return;
                 }
 
@@ -476,9 +471,7 @@
         if (typeof window !== "undefined") {
             window.addEventListener("beforeunload", function () {
                 if (server.pid !== null) {
-                    try {
-                        processApi.terminate(server.pid);
-                    } catch (e) {}
+                    try { processApi.terminate(server.pid); } catch (e) {}
                     server.pid = null;
                     server.ready = false;
                 }

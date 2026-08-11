@@ -5,25 +5,25 @@ var AudioSyncProUI = (function () {
     var els = {};
 
     var PRESETS = {
-        fast: { sampleRate: 8000, sampleSeconds: 10, maxOffset: 5.0, matchThreshold: 0.35 },
-        balanced: { sampleRate: 16000, sampleSeconds: 30, maxOffset: 10.0, matchThreshold: 0.45 },
-        accurate: { sampleRate: 22050, sampleSeconds: 60, maxOffset: 20.0, matchThreshold: 0.55 },
+        fast: { sampleRate: 8000, sampleSeconds: 10, maxOffset: 5.0, matchThreshold: 0.35, hint: "نرخ نمونه ۸kHz، ۱۰ ثانیه، آستانه ۰.۳۵ — برای پیش‌نمایش سریع" },
+        balanced: { sampleRate: 16000, sampleSeconds: 30, maxOffset: 10.0, matchThreshold: 0.45, hint: "نرخ نمونه ۱۶kHz، ۳۰ ثانیه، آستانه ۰.۴۵ — بهترین تعادل" },
+        accurate: { sampleRate: 22050, sampleSeconds: 60, maxOffset: 20.0, matchThreshold: 0.55, hint: "نرخ نمونه ۲۲.۰۵kHz، ۶۰ ثانیه، آستانه ۰.۵۵ — بیشترین دقت" },
         custom: null
     };
 
     function getEls() {
-        if (!els.ffmpegPath) {
+        if (!els.analyzeBtn) {
             els = {
-                pythonPath: document.getElementById("pythonPath"),
-                ffmpegPath: document.getElementById("ffmpegPath"),
                 preset: document.getElementById("preset"),
+                presetHint: document.getElementById("presetHint"),
+                customSettings: document.getElementById("customSettings"),
                 sampleRate: document.getElementById("sampleRate"),
                 sampleSeconds: document.getElementById("sampleSeconds"),
+                maxOffset: document.getElementById("maxOffset"),
+                matchThreshold: document.getElementById("matchThreshold"),
                 placeOnTracks: document.getElementById("placeOnTracks"),
                 normalizeAudio: document.getElementById("normalizeAudio"),
-                matchThreshold: document.getElementById("matchThreshold"),
                 targetPeak: document.getElementById("targetPeak"),
-                maxOffset: document.getElementById("maxOffset"),
                 analyzeBtn: document.getElementById("analyzeBtn"),
                 normalizeOnlyBtn: document.getElementById("normalizeOnlyBtn"),
                 progressPanel: document.getElementById("progressPanel"),
@@ -31,7 +31,8 @@ var AudioSyncProUI = (function () {
                 progressPercent: document.getElementById("progressPercent"),
                 progressFill: document.getElementById("progressFill"),
                 logOutput: document.getElementById("logOutput"),
-                status: document.getElementById("status")
+                status: document.getElementById("status"),
+                statusDot: document.getElementById("statusDot")
             };
         }
         return els;
@@ -42,6 +43,19 @@ var AudioSyncProUI = (function () {
             .replace(/&/g, "&amp;")
             .replace(/</g, "&lt;")
             .replace(/>/g, "&gt;");
+    }
+
+    function toPersianDigits(str) {
+        return String(str || "").replace(/\d/g, function (d) {
+            return "۰۱۲۳۴۵۶۷۸۹"[parseInt(d, 10)];
+        });
+    }
+
+    function setDot(state) {
+        var e = getEls();
+        e.statusDot.classList.remove("ready", "error");
+        if (state === "ready") e.statusDot.classList.add("ready");
+        else if (state === "error") e.statusDot.classList.add("error");
     }
 
     function log(message, type) {
@@ -58,6 +72,8 @@ var AudioSyncProUI = (function () {
         var e = getEls();
         e.status.textContent = message;
         e.status.className = "status " + (type || "");
+        if (type === "error") setDot("error");
+        else if (type === "success") setDot("ready");
     }
 
     function setProgress(percent, label) {
@@ -65,7 +81,7 @@ var AudioSyncProUI = (function () {
         e.progressPanel.style.display = "block";
         percent = Math.max(0, Math.min(100, Math.round(percent)));
         e.progressFill.style.width = percent + "%";
-        e.progressPercent.textContent = percent + "%";
+        e.progressPercent.textContent = toPersianDigits(percent) + "٪";
         if (label) e.progressLabel.textContent = label;
     }
 
@@ -77,8 +93,6 @@ var AudioSyncProUI = (function () {
     function getSettings() {
         var e = getEls();
         return {
-            pythonPath: e.pythonPath.value.trim() || "python",
-            ffmpegPath: e.ffmpegPath.value.trim() || "",
             sampleRate: parseInt(e.sampleRate.value, 10) || 16000,
             sampleSeconds: parseFloat(e.sampleSeconds.value) || 30,
             placeOnTracks: e.placeOnTracks.checked,
@@ -101,10 +115,23 @@ var AudioSyncProUI = (function () {
         var cfg = PRESETS[name] || PRESETS["balanced"];
         var custom = name === "custom";
 
-        e.sampleRate.disabled = !custom;
-        e.sampleSeconds.disabled = !custom;
-        e.maxOffset.disabled = !custom;
-        e.matchThreshold.disabled = !custom;
+        if (custom) {
+            e.customSettings.classList.remove("hidden");
+            e.presetHint.textContent = "مقادیر سفارشی فعال هستند";
+            e.sampleRate.disabled = false;
+            e.sampleSeconds.disabled = false;
+            e.maxOffset.disabled = false;
+            e.matchThreshold.disabled = false;
+            return;
+        }
+
+        e.customSettings.classList.add("hidden");
+        if (cfg && cfg.hint) e.presetHint.textContent = cfg.hint;
+
+        e.sampleRate.disabled = true;
+        e.sampleSeconds.disabled = true;
+        e.maxOffset.disabled = true;
+        e.matchThreshold.disabled = true;
 
         if (cfg) {
             e.sampleRate.value = String(cfg.sampleRate);
@@ -135,6 +162,7 @@ var AudioSyncProUI = (function () {
         setProgress: setProgress,
         hideProgress: hideProgress,
         getSettings: getSettings,
-        setBusy: setBusy
+        setBusy: setBusy,
+        setDot: setDot
     };
 })();
