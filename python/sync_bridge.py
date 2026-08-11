@@ -35,6 +35,7 @@ import json
 import math
 import os
 import re
+import shutil
 import struct
 import subprocess
 import sys
@@ -130,6 +131,10 @@ def log(msg):
 def get_bundle_ffmpeg_path():
     """Return the path to a bundled ffmpeg binary if present."""
     base_candidates = []
+    # PyInstaller onefile extraction directory and executable directory.
+    meipass = getattr(sys, "_MEIPASS", "")
+    if meipass:
+        base_candidates.append(meipass)
     if getattr(sys, "frozen", False):
         base_candidates.append(os.path.dirname(sys.executable))
     if __file__:
@@ -145,7 +150,13 @@ def resolve_ffmpeg_path(settings):
     """Pick the ffmpeg binary: explicit setting, bundled binary, or PATH."""
     explicit = (settings or {}).get("ffmpegPath", "")
     if explicit and explicit.strip():
-        return explicit.strip()
+        # If the user left the generic 'ffmpeg' placeholder and it is not in PATH,
+        # prefer the bundled binary to avoid [WinError 2].
+        path = explicit.strip()
+        if path.lower() not in ("ffmpeg", "ffmpeg.exe"):
+            return path
+        if shutil.which(path):
+            return path
     bundled = get_bundle_ffmpeg_path()
     if bundled:
         return bundled
