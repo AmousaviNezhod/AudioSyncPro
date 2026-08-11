@@ -306,10 +306,11 @@
         try { processApi.stderr(server.pid, onServerStderr); } catch (e) {}
         try { processApi.onquit(server.pid, onServerQuit); } catch (e) {}
 
-        // If we do not see the "server started" line within 6 seconds, give up.
+        // If we do not see the "server started" line within 30 seconds, give up.
+        // (The onefile executable may need a few seconds to extract on first run.)
         server.startTimeout = setTimeout(function () {
             failStart("server did not report ready in time");
-        }, 6000);
+        }, 30000);
     }
 
     function sendRequest(request, callback) {
