@@ -18,7 +18,12 @@
 
         <main class="app-body">
             <section class="panel-section">
-                <div class="section-title">تنظیمات ffmpeg</div>
+                <div class="section-title">تنظیمات Python و ffmpeg</div>
+                <div class="input-group">
+                    <label for="pythonPath">مسیر Python (اختیاری)</label>
+                    <input id="pythonPath" class="text-input" type="text" placeholder="python">
+                    <div class="input-hint">اگر python در PATH نیست یا چند نسخه دارید، مسیر python.exe را وارد کنید. pip install -r requirements.txt لازم است.</div>
+                </div>
                 <div class="input-group">
                     <label for="ffmpegPath">مسیر ffmpeg (اختیاری)</label>
                     <input id="ffmpegPath" class="text-input" type="text" placeholder="ffmpeg">

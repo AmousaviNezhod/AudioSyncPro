@@ -7,6 +7,7 @@ var AudioSyncProUI = (function () {
     function getEls() {
         if (!els.ffmpegPath) {
             els = {
+                pythonPath: document.getElementById("pythonPath"),
                 ffmpegPath: document.getElementById("ffmpegPath"),
                 sampleRate: document.getElementById("sampleRate"),
                 sampleSeconds: document.getElementById("sampleSeconds"),
@@ -68,6 +69,7 @@ var AudioSyncProUI = (function () {
     function getSettings() {
         var e = getEls();
         return {
+            pythonPath: e.pythonPath.value.trim() || "python",
             ffmpegPath: e.ffmpegPath.value.trim() || "ffmpeg",
             sampleRate: parseInt(e.sampleRate.value, 10) || 16000,
             sampleSeconds: parseFloat(e.sampleSeconds.value) || 30,

@@ -1,18 +1,21 @@
 /**
- * Audio Sync Pro - Main controller
+ * Audio Sync Pro - Main controller (Python bridge)
+ *
+ * The audio analysis now runs in an external Python process spawned via
+ * window.cep.process. Python writes a JSON response that is passed to the
+ * ExtendScript host bridge (host.applyPlan).
  */
 (function () {
     var cs = null;
     var fs = null;
-    var AudioUtils = null;
-    var SyncEngine = null;
-    var pathModule = null;
+    var processApi = null;
     var hostLoaded = false;
     var runtimeReady = false;
     var runtimeError = "";
 
     function initRuntime() {
         if (runtimeReady) return true;
+        runtimeError = "";
         try {
             if (typeof CSInterface !== "undefined") {
                 cs = new CSInterface();
@@ -29,52 +32,26 @@
         }
 
         try {
-            pathModule = requireModule("path");
+            processApi = (window.cep && window.cep.process) ? window.cep.process : null;
         } catch (e) {
-            runtimeError = e.message || "Node.js not enabled";
-            return false;
+            processApi = null;
         }
 
-        try {
-            var nodeDir = getExtensionNodeDir();
-            AudioUtils = requireModule(pathModule.join(nodeDir, "AudioUtils.js"));
-            SyncEngine = requireModule(pathModule.join(nodeDir, "SyncEngine.js"));
-        } catch (e) {
-            runtimeError = e.message || "Could not load sync engine";
+        if (!cs) {
+            runtimeError = "CSInterface not available";
+            return false;
+        }
+        if (!fs) {
+            runtimeError = "CEP fs API not available";
+            return false;
+        }
+        if (!processApi) {
+            runtimeError = "CEP process API not available";
             return false;
         }
 
         runtimeReady = true;
         return true;
-    }
-
-    function requireModule(name) {
-        try {
-            if (typeof require !== "undefined" && require) {
-                return require(name);
-            }
-        } catch (e) {}
-        try {
-            if (window.cep_node && window.cep_node.require) {
-                return window.cep_node.require(name);
-            }
-        } catch (e) {}
-        throw new Error("Node.js not enabled");
-    }
-
-    function getExtensionNodeDir() {
-        if (cs && typeof SystemPath !== "undefined") {
-            try {
-                return cs.getSystemPath(SystemPath.EXTENSION).replace(/\\/g, "/") + "/node";
-            } catch (e) {}
-        }
-        // Fallback for non-CEP test contexts: resolve relative to this script.
-        var script = document.currentScript || (document.querySelector && document.querySelector("script[src*='main.js']"));
-        if (script && script.src) {
-            var base = script.src.split("?")[0].replace(/\/js\/main\.js$/, "");
-            return base + "/node";
-        }
-        return "./node";
     }
 
     function getHostJsxPath() {
@@ -86,6 +63,24 @@
         } catch (e) {
             return "";
         }
+    }
+
+    function toNativePath(p) {
+        if (!p) return p;
+        var os = "";
+        try {
+            os = cs.getOSInformation();
+        } catch (e) {}
+        if (os && os.indexOf("Windows") !== -1) {
+            return p.replace(/\//g, "\\");
+        }
+        return p.replace(/\\/g, "/");
+    }
+
+    function getWorkDir() {
+        var base = cs.getSystemPath(SystemPath.USER_DATA);
+        if (!base) base = cs.getSystemPath(SystemPath.EXTENSION);
+        return toNativePath(base.replace(/\/$/, "")) + toNativePath("/AudioSyncPro");
     }
 
     function loadHostJsx(callback) {
@@ -163,11 +158,115 @@
         return true;
     }
 
+    function writeFileSafe(path, content) {
+        var res = fs.writeFile(path, content, window.cep.encoding.UTF8);
+        if (res.err !== fs.NO_ERROR) {
+            throw new Error("writeFile failed (" + res.err + ") for " + path);
+        }
+    }
+
+    function readFileSafe(path) {
+        var res = fs.readFile(path, window.cep.encoding.UTF8);
+        if (res.err !== fs.NO_ERROR) {
+            throw new Error("readFile failed (" + res.err + ") for " + path);
+        }
+        return res.data;
+    }
+
+    function ensureWorkDir() {
+        var dir = getWorkDir();
+        try {
+            fs.makedir(dir);
+        } catch (e) {}
+        return dir;
+    }
+
+    function runPythonBridge(op, clips, settings, callback) {
+        var workDir = ensureWorkDir();
+        var requestPath = workDir + toNativePath("/request.json");
+        var responsePath = workDir + toNativePath("/response.json");
+
+        var scriptPath = cs.getSystemPath(SystemPath.EXTENSION).replace(/\/$/, "") + "/python/sync_bridge.py";
+        scriptPath = toNativePath(scriptPath);
+
+        var pythonPath = toNativePath(settings.pythonPath || "python");
+
+        var request = {
+            op: op,
+            clips: clips,
+            settings: settings
+        };
+
+        try {
+            writeFileSafe(requestPath, JSON.stringify(request));
+        } catch (e) {
+            callback({ success: false, error: e.message });
+            return;
+        }
+
+        var procRes = processApi.createProcess(pythonPath, scriptPath, requestPath, responsePath);
+        if (procRes.err !== 0) {
+            callback({ success: false, error: "Could not start Python process: " + procRes.err });
+            return;
+        }
+
+        var pid = procRes.data;
+        var stderr = "";
+        var finished = false;
+        try {
+            processApi.stderr(pid, function (chunk) {
+                if (chunk) stderr += chunk;
+            });
+        } catch (e) {}
+
+        var checkTimer = null;
+        var timeoutId = null;
+
+        function finish(error, response) {
+            if (finished) return;
+            finished = true;
+            if (checkTimer) clearInterval(checkTimer);
+            if (timeoutId) clearTimeout(timeoutId);
+            try {
+                processApi.terminate(pid);
+            } catch (e) {}
+            if (error) {
+                callback({ success: false, error: error + (stderr ? "\n" + stderr : "") });
+            } else {
+                callback(response);
+            }
+        }
+
+        checkTimer = setInterval(function () {
+            var running = processApi.isRunning(pid);
+            if (running.err === 0 && running.data) {
+                return;
+            }
+
+            if (running.err !== 0) {
+                return finish("process.isRunning error: " + running.err);
+            }
+
+            try {
+                var data = readFileSafe(responsePath);
+                var resp = JSON.parse(data);
+                return finish(null, resp);
+            } catch (e) {
+                return finish("Could not read Python response: " + e.message);
+            }
+        }, 200);
+
+        // Safety timeout (120 seconds).
+        timeoutId = setTimeout(function () {
+            finish("Python bridge timed out");
+        }, 120000);
+    }
+
     function runSync(settings) {
         if (!ensureRuntime()) return;
 
         AudioSyncProUI.setBusy(true);
-        AudioSyncProUI.setProgress(0, "آماده‌سازی");
+        AudioSyncProUI.setProgress(10, "دریافت کلیپ‌ها...");
 
         getClipsFromTimeline(function (clips) {
             if (!clips) {
@@ -181,30 +280,21 @@
                 log((i + 1) + ". " + clips[i].name + " | track " + clips[i].trackIndex + " | start " + clips[i].startSeconds.toFixed(3) + "s");
             }
 
-            SyncEngine.analyzeClips(clips, settings, function (percent, label) {
-                AudioSyncProUI.setProgress(percent * 0.5, label);
-                log(label, "info");
-            }).then(function (results) {
-                AudioSyncProUI.setProgress(50, "خوشه‌بندی کلیپ‌ها");
-                var groupsObj = SyncEngine.findGroups(results, settings, function (percent, label) {
-                    AudioSyncProUI.setProgress(50 + percent * 0.2, label);
-                    log(label, "info");
-                });
+            AudioSyncProUI.setProgress(30, "تحلیل صدا در Python...");
 
-                log("گروه‌های سینک شناسایی شد:", "info");
-                for (var g = 0; g < groupsObj.groups.length; g++) {
-                    var grp = groupsObj.groups[g];
-                    var names = grp.members.map(function (m) { return results[m.index].name; });
-                    log("  گروه " + (g + 1) + ": " + names.join(", "));
-                }
-                if (groupsObj.orphans.length > 0) {
-                    var orphanNames = groupsObj.orphans.map(function (idx) { return results[idx].name; });
-                    log("  بدون سینک: " + orphanNames.join(", "));
-                }
-
-                var plan = SyncEngine.buildPlan(results, groupsObj, settings);
+            runPythonBridge("sync", clips, settings, function (resp) {
                 AudioSyncProUI.setProgress(80, "اعمال روی تایم‌لاین");
-                callHost("host.applyPlan", { operations: plan.operations }, function (res) {
+
+                if (!resp.success) {
+                    AudioSyncProUI.setBusy(false);
+                    AudioSyncProUI.hideProgress();
+                    AudioSyncProUI.setStatus(resp.error || "خطا در Python", "error");
+                    log(resp.error || "خطا در Python", "error");
+                    return;
+                }
+
+                log("گروه‌های سینک: " + ((resp.data && resp.data.groups) ? resp.data.groups.length : 0), "info");
+                callHost("host.applyPlan", { operations: resp.data.operations }, function (res) {
                     AudioSyncProUI.setBusy(false);
                     AudioSyncProUI.setProgress(100, "تمام");
                     if (!res.success) {
@@ -221,11 +311,6 @@
                     }
                     setTimeout(AudioSyncProUI.hideProgress, 1500);
                 });
-            }).catch(function (err) {
-                AudioSyncProUI.setBusy(false);
-                AudioSyncProUI.hideProgress();
-                AudioSyncProUI.setStatus(err.message, "error");
-                log(err.message, "error");
             });
         });
     }
@@ -234,7 +319,7 @@
         if (!ensureRuntime()) return;
 
         AudioSyncProUI.setBusy(true);
-        AudioSyncProUI.setProgress(0, "آماده‌سازی");
+        AudioSyncProUI.setProgress(10, "دریافت کلیپ‌ها...");
 
         getClipsFromTimeline(function (clips) {
             if (!clips) {
@@ -243,32 +328,25 @@
                 return;
             }
 
-            var s = {
-                ffmpegPath: settings.ffmpegPath,
-                sampleRate: settings.sampleRate,
-                sampleSeconds: settings.sampleSeconds,
-                normalizeAudio: true,
-                targetPeak: settings.targetPeak
-            };
+            AudioSyncProUI.setProgress(30, "تحلیل صدا در Python...");
 
-            SyncEngine.analyzeClips(clips, s, function (percent, label) {
-                AudioSyncProUI.setProgress(percent * 0.8, label);
-                log(label, "info");
-            }).then(function (results) {
-                var operations = [];
-                for (var i = 0; i < results.length; i++) {
-                    if (results[i].gainDb && results[i].gainDb !== 0) {
-                        operations.push({
-                            type: "gain",
-                            id: results[i].id,
-                            trackIndex: results[i].trackIndex,
-                            clipIndex: results[i].clipIndex,
-                            gainDb: results[i].gainDb
-                        });
-                        log(results[i].name + " -> gain " + results[i].gainDb.toFixed(2) + " dB", "info");
-                    }
-                }
+            runPythonBridge("normalize", clips, settings, function (resp) {
                 AudioSyncProUI.setProgress(80, "اعمال نرمالایز");
+
+                if (!resp.success) {
+                    AudioSyncProUI.setBusy(false);
+                    AudioSyncProUI.hideProgress();
+                    AudioSyncProUI.setStatus(resp.error || "خطا در Python", "error");
+                    log(resp.error || "خطا در Python", "error");
+                    return;
+                }
+
+                var operations = (resp.data && resp.data.operations) ? resp.data.operations : [];
+                for (var i = 0; i < operations.length; i++) {
+                    var op = operations[i];
+                    log(op.name + " -> gain " + op.gainDb.toFixed(2) + " dB", "info");
+                }
+
                 callHost("host.applyPlan", { operations: operations }, function (res) {
                     AudioSyncProUI.setBusy(false);
                     AudioSyncProUI.setProgress(100, "تمام");
@@ -281,11 +359,6 @@
                     }
                     setTimeout(AudioSyncProUI.hideProgress, 1500);
                 });
-            }).catch(function (err) {
-                AudioSyncProUI.setBusy(false);
-                AudioSyncProUI.hideProgress();
-                AudioSyncProUI.setStatus(err.message, "error");
-                log(err.message, "error");
             });
         });
     }
@@ -298,7 +371,7 @@
         AudioSyncProUI.setStatus("آماده");
         log("Audio Sync Pro بارگذاری شد", "success");
 
-        // In a CEP panel this is a no-op; in a plain browser it keeps the UI usable.
+        // Load CEP runtime if available; in a plain browser this will fail gracefully.
         initRuntime();
         if (!runtimeReady && runtimeError) {
             log(runtimeError, "warn");
