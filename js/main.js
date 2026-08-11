@@ -186,9 +186,9 @@
         var requestPath = workDir + toNativePath("/request.json");
         var responsePath = workDir + toNativePath("/response.json");
 
-        var scriptPath = cs.getSystemPath(SystemPath.EXTENSION).replace(/\/$/, "") + "/python/sync_bridge.py";
-        scriptPath = toNativePath(scriptPath);
-
+        var extBase = cs.getSystemPath(SystemPath.EXTENSION).replace(/\/$/, "");
+        var exePath = toNativePath(extBase + "/python/dist/sync_bridge.exe");
+        var scriptPath = toNativePath(extBase + "/python/sync_bridge.py");
         var pythonPath = toNativePath(settings.pythonPath || "python");
 
         var request = {
@@ -204,13 +204,34 @@
             return;
         }
 
-        var procRes = processApi.createProcess(pythonPath, scriptPath, requestPath, responsePath);
-        if (procRes.err !== 0) {
-            callback({ success: false, error: "Could not start Python process: " + procRes.err });
-            return;
+        var os = "";
+        try {
+            os = cs.getOSInformation();
+        } catch (e) {}
+        var isWindows = os.indexOf("Windows") !== -1;
+
+        function startBridge(executable, args, fallback) {
+            var callArgs = [executable].concat(args);
+            var procRes = processApi.createProcess.apply(processApi, callArgs);
+            if (procRes.err !== 0) {
+                if (fallback) return fallback();
+                return callback({ success: false, error: "Could not start bridge: " + procRes.err });
+            }
+            monitorProcess(procRes.data, responsePath, callback);
         }
 
-        var pid = procRes.data;
+        if (isWindows) {
+            // Prefer the compiled executable on Windows; fall back to the Python script.
+            startBridge(exePath, [requestPath, responsePath], function () {
+                log("Compiled bridge not available, falling back to Python script", "warn");
+                startBridge(pythonPath, [scriptPath, requestPath, responsePath], null);
+            });
+        } else {
+            startBridge(pythonPath, [scriptPath, requestPath, responsePath], null);
+        }
+    }
+
+    function monitorProcess(pid, responsePath, callback) {
         var stderr = "";
         var finished = false;
         try {
@@ -252,13 +273,13 @@
                 var resp = JSON.parse(data);
                 return finish(null, resp);
             } catch (e) {
-                return finish("Could not read Python response: " + e.message);
+                return finish("Could not read bridge response: " + e.message);
             }
         }, 200);
 
         // Safety timeout (120 seconds).
         timeoutId = setTimeout(function () {
-            finish("Python bridge timed out");
+            finish("Bridge timed out");
         }, 120000);
     }
 
