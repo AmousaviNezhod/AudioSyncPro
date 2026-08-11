@@ -1,2 +1,0 @@
-python/dist/bin/ffmpeg.exe filter=lfs diff=lfs merge=lfs -text
-python/dist/sync_bridge.exe filter=lfs diff=lfs merge=lfs -text
