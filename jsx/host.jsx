@@ -94,49 +94,125 @@ var host = host || {};
     }
 
     /**
+     * Collect the currently selected TrackItems, first by seq.getSelection(),
+     * then (if that fails) by iterating every track and calling isSelected().
+     */
+    function getSelectedTrackItems(seq) {
+        var items = [];
+        if (seq.getSelection) {
+            try {
+                var sel = seq.getSelection();
+                if (sel) {
+                    var count = 0;
+                    if (typeof sel.length === "number") count = sel.length;
+                    else if (typeof sel.numItems === "number") count = sel.numItems;
+                    for (var i = 0; i < count; i++) {
+                        if (sel[i]) items.push(sel[i]);
+                    }
+                }
+            } catch (e) {}
+        }
+        if (items.length === 0) {
+            var ti, ci, track, c;
+            for (ti = 0; ti < seq.videoTracks.numTracks; ti++) {
+                try {
+                    track = seq.videoTracks[ti];
+                    for (ci = 0; ci < track.clips.numItems; ci++) {
+                        c = track.clips[ci];
+                        try { if (c.isSelected()) items.push(c); } catch (e2) {}
+                    }
+                } catch (e) {}
+            }
+            for (ti = 0; ti < seq.audioTracks.numTracks; ti++) {
+                try {
+                    track = seq.audioTracks[ti];
+                    for (ci = 0; ci < track.clips.numItems; ci++) {
+                        c = track.clips[ci];
+                        try { if (c.isSelected()) items.push(c); } catch (e2) {}
+                    }
+                } catch (e) {}
+            }
+        }
+        return items;
+    }
+
+    function getClipSignature(clip) {
+        var name = "";
+        var start = 0.0, end = 0.0, inPoint = 0.0, outPoint = 0.0, nodeId = "";
+        try { name = String(clip.name); } catch (e) {}
+        try { start = parseFloat(clip.start.seconds); } catch (e) {}
+        try { end = parseFloat(clip.end.seconds); } catch (e) {}
+        try { inPoint = parseFloat(clip.inPoint.seconds); } catch (e) {}
+        try { outPoint = parseFloat(clip.outPoint.seconds); } catch (e) {}
+        try { nodeId = String(clip.nodeId); } catch (e) {}
+        return { name: name, start: start, end: end, inPoint: inPoint, outPoint: outPoint, nodeId: nodeId };
+    }
+
+    function isSameClip(candidate, sig) {
+        try {
+            var cnode = "";
+            try { cnode = String(candidate.nodeId); } catch (e) {}
+            if (sig.nodeId && cnode && cnode === sig.nodeId) return true;
+
+            var cname = "";
+            try { cname = String(candidate.name); } catch (e) {}
+            if (cname !== sig.name) return false;
+
+            var cstart = 0.0, cend = 0.0;
+            try { cstart = parseFloat(candidate.start.seconds); } catch (e) {}
+            try { cend = parseFloat(candidate.end.seconds); } catch (e) {}
+            if (Math.abs(cstart - sig.start) > 0.001) return false;
+            if (Math.abs(cend - sig.end) > 0.001) return false;
+            return true;
+        } catch (e) {}
+        return false;
+    }
+
+    function findTrackAndClipIndex(seq, clip) {
+        var sig = getClipSignature(clip);
+        var ti, ci, track, c;
+        for (ti = 0; ti < seq.videoTracks.numTracks; ti++) {
+            track = seq.videoTracks[ti];
+            for (ci = 0; ci < track.clips.numItems; ci++) {
+                c = track.clips[ci];
+                if (isSameClip(c, sig)) return { trackIndex: ti, clipIndex: ci, isAudio: false };
+            }
+        }
+        for (ti = 0; ti < seq.audioTracks.numTracks; ti++) {
+            track = seq.audioTracks[ti];
+            for (ci = 0; ci < track.clips.numItems; ci++) {
+                c = track.clips[ci];
+                if (isSameClip(c, sig)) return { trackIndex: ti, clipIndex: ci, isAudio: true };
+            }
+        }
+        return null;
+    }
+
+    /**
      * Get selected clips info from the active sequence.
      */
     host.getSelectedClips = function () {
         var seq = app.project.activeSequence;
         if (!seq) return error("No active sequence");
 
-        var selection = seq.getSelection ? seq.getSelection() : null;
-        var count = 0;
-        if (selection) {
-            if (typeof selection.length === "number") count = selection.length;
-            else if (typeof selection.numItems === "number") count = selection.numItems;
-        }
-        if (!selection || count === 0) {
+        var selected = getSelectedTrackItems(seq);
+        if (selected.length === 0) {
             return error("No clips selected on timeline");
         }
 
         var clips = [];
-        for (var i = 0; i < count; i++) {
-            var clip = selection[i];
+        for (var i = 0; i < selected.length; i++) {
+            var clip = selected[i];
             if (!clip) continue;
 
-            var trackIndex = -1;
-            var clipIndex = -1;
+            var info = findTrackAndClipIndex(seq, clip);
             var isAudio = false;
-
-            // Try to determine track/clip index by matching across audio and video tracks.
-            var found = false;
             try {
-                for (var ti = 0; ti < seq.videoTracks.numTracks && !found; ti++) {
-                    for (var ci = 0; ci < seq.videoTracks[ti].clips.numItems && !found; ci++) {
-                        if (seq.videoTracks[ti].clips[ci] === clip) {
-                            trackIndex = ti; clipIndex = ci; isAudio = false; found = true;
-                        }
-                    }
-                }
-                for (var ti = 0; ti < seq.audioTracks.numTracks && !found; ti++) {
-                    for (var ci = 0; ci < seq.audioTracks[ti].clips.numItems && !found; ci++) {
-                        if (seq.audioTracks[ti].clips[ci] === clip) {
-                            trackIndex = ti; clipIndex = ci; isAudio = true; found = true;
-                        }
-                    }
-                }
+                if (clip.mediaType === "Audio" || clip.type === 2) isAudio = true;
             } catch (e) {}
+            var trackIndex = info ? info.trackIndex : -1;
+            var clipIndex = info ? info.clipIndex : -1;
+            if (info && info.isAudio) isAudio = true;
 
             var name = "";
             try { name = clip.name; } catch (e) {}
