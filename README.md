@@ -100,7 +100,6 @@ AudioSyncPro/
 
 ## نکات مهم
 
-- فایل‌های `sync_bridge.exe` و `ffmpeg.exe` با Git LFS ذخیره شده‌اند؛ هنگام دانلود مخزن حتماً Git LFS فعال باشد.
 - پنل یک فایل `request.json` در پوشه `USER_DATA/AudioSyncPro` می‌نویسد، سپس `python/dist/sync_bridge.exe` را اجرا می‌کند و نتیجه را از `response.json` می‌خواند.
 - اگر فایل اجرایی موتور کار نکرد، می‌توانید مسیر Python را در پنل وارد کرده و نسخه `python/sync_bridge.py` را اجرا کنید (`pip install -r python/requirements.txt` لازم است).
 - حتی اگر همه کلیپ‌های انتخابی روی یک ترک باشند، عملیات سینک انجام شده و روی ترک‌های جداگانه قرار می‌گیرند (باید ترک‌های کافی در سیکوئنس وجود داشته باشد).
