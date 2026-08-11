@@ -70,7 +70,7 @@ var AudioSyncProUI = (function () {
         var e = getEls();
         return {
             pythonPath: e.pythonPath.value.trim() || "python",
-            ffmpegPath: e.ffmpegPath.value.trim() || "ffmpeg",
+            ffmpegPath: e.ffmpegPath.value.trim() || "",
             sampleRate: parseInt(e.sampleRate.value, 10) || 16000,
             sampleSeconds: parseFloat(e.sampleSeconds.value) || 30,
             placeOnTracks: e.placeOnTracks.checked,
