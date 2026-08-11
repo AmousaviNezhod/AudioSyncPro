@@ -1,9 +1,10 @@
 /**
  * Audio Sync Pro - Main controller (Python bridge)
  *
- * The audio analysis now runs in an external Python process spawned via
- * window.cep.process. Python writes a JSON response that is passed to the
- * ExtendScript host bridge (host.applyPlan).
+ * A compiled Python server is launched once via window.cep.process and kept
+ * alive in the background. Requests are sent as JSON lines over stdin and
+ * responses are read as JSON lines from stdout. This avoids spawning a new
+ * process (and a new console) for every sync/normalize operation.
  */
 (function () {
     var cs = null;
@@ -12,6 +13,17 @@
     var hostLoaded = false;
     var runtimeReady = false;
     var runtimeError = "";
+
+    var server = {
+        pid: null,
+        starting: false,
+        ready: false,
+        stdoutBuffer: "",
+        stderrBuffer: "",
+        pending: null,
+        requestCounter: 0,
+        workDir: ""
+    };
 
     function initRuntime() {
         if (runtimeReady) return true;
@@ -81,6 +93,29 @@
         var base = cs.getSystemPath(SystemPath.USER_DATA);
         if (!base) base = cs.getSystemPath(SystemPath.EXTENSION);
         return toNativePath(base.replace(/\/$/, "")) + toNativePath("/AudioSyncPro");
+    }
+
+    function writeFileSafe(path, content) {
+        var res = fs.writeFile(path, content, window.cep.encoding.UTF8);
+        if (res.err !== fs.NO_ERROR) {
+            throw new Error("writeFile failed (" + res.err + ") for " + path);
+        }
+    }
+
+    function readFileSafe(path) {
+        var res = fs.readFile(path, window.cep.encoding.UTF8);
+        if (res.err !== fs.NO_ERROR) {
+            throw new Error("readFile failed (" + res.err + ") for " + path);
+        }
+        return res.data;
+    }
+
+    function ensureWorkDir() {
+        var dir = getWorkDir();
+        try {
+            fs.makedir(dir);
+        } catch (e) {}
+        return dir;
     }
 
     function loadHostJsx(callback) {
@@ -158,129 +193,168 @@
         return true;
     }
 
-    function writeFileSafe(path, content) {
-        var res = fs.writeFile(path, content, window.cep.encoding.UTF8);
-        if (res.err !== fs.NO_ERROR) {
-            throw new Error("writeFile failed (" + res.err + ") for " + path);
-        }
-    }
-
-    function readFileSafe(path) {
-        var res = fs.readFile(path, window.cep.encoding.UTF8);
-        if (res.err !== fs.NO_ERROR) {
-            throw new Error("readFile failed (" + res.err + ") for " + path);
-        }
-        return res.data;
-    }
-
-    function ensureWorkDir() {
-        var dir = getWorkDir();
-        try {
-            fs.makedir(dir);
-        } catch (e) {}
-        return dir;
-    }
-
-    function runPythonBridge(op, clips, settings, callback) {
-        var workDir = ensureWorkDir();
-        var requestPath = workDir + toNativePath("/request.json");
-        var responsePath = workDir + toNativePath("/response.json");
-
+    function getBridgePath() {
         var extBase = cs.getSystemPath(SystemPath.EXTENSION).replace(/\/$/, "");
         var exePath = toNativePath(extBase + "/python/dist/sync_bridge.exe");
         var scriptPath = toNativePath(extBase + "/python/sync_bridge.py");
-        var pythonPath = toNativePath(settings.pythonPath || "python");
+        return { exePath: exePath, scriptPath: scriptPath };
+    }
 
-        var request = {
-            op: op,
-            clips: clips,
-            settings: settings
-        };
-
-        try {
-            writeFileSafe(requestPath, JSON.stringify(request));
-        } catch (e) {
-            callback({ success: false, error: e.message });
-            return;
+    function flushStdoutBuffer() {
+        var lines = server.stdoutBuffer.split("\n");
+        server.stdoutBuffer = lines.pop();
+        for (var i = 0; i < lines.length; i++) {
+            var line = lines[i].trim();
+            if (!line) continue;
+            try {
+                var resp = JSON.parse(line);
+                if (server.pending) {
+                    clearTimeout(server.pending.timeoutId);
+                    var cb = server.pending.callback;
+                    server.pending = null;
+                    cb(resp);
+                } else {
+                    log("Unexpected server response", "warn");
+                }
+            } catch (e) {
+                log("Bad server JSON: " + line.substring(0, 80), "warn");
+            }
         }
+    }
+
+    function onServerStderr(chunk) {
+        if (!chunk) return;
+        server.stderrBuffer += chunk;
+        var lines = server.stderrBuffer.split("\n");
+        server.stderrBuffer = lines.pop();
+        for (var i = 0; i < lines.length; i++) {
+            var line = lines[i].trim();
+            if (line) log("[server] " + line, "info");
+        }
+    }
+
+    function onServerStdout(chunk) {
+        if (chunk === null || chunk === undefined) return;
+        server.stdoutBuffer += chunk;
+        flushStdoutBuffer();
+    }
+
+    function startServer(callback) {
+        if (server.starting) return;
+        if (server.ready && server.pid !== null) {
+            return callback(true);
+        }
+
+        // Reset state if restarting.
+        if (server.pid !== null) {
+            try {
+                processApi.terminate(server.pid);
+            } catch (e) {}
+            server.pid = null;
+        }
+        server.starting = true;
+        server.stdoutBuffer = "";
+        server.stderrBuffer = "";
+        server.pending = null;
 
         var os = "";
         try {
             os = cs.getOSInformation();
         } catch (e) {}
         var isWindows = os.indexOf("Windows") !== -1;
+        var paths = getBridgePath();
+        var pythonPath = toNativePath("python");
 
-        function startBridge(executable, args, fallback) {
+        function trySpawn(executable, args, onFail) {
             var callArgs = [executable].concat(args);
             var procRes = processApi.createProcess.apply(processApi, callArgs);
             if (procRes.err !== 0) {
-                if (fallback) return fallback();
-                return callback({ success: false, error: "Could not start bridge: " + procRes.err });
+                if (onFail) return onFail();
+                server.starting = false;
+                callback(false);
+                return;
             }
-            monitorProcess(procRes.data, responsePath, callback);
+            server.pid = procRes.data;
+            try {
+                processApi.stdout(server.pid, onServerStdout);
+            } catch (e) {}
+            try {
+                processApi.stderr(server.pid, onServerStderr);
+            } catch (e) {}
+
+            // Wait briefly for the server to initialize, then mark ready.
+            setTimeout(function () {
+                var running = processApi.isRunning(server.pid);
+                if (running.err === 0 && running.data) {
+                    server.starting = false;
+                    server.ready = true;
+                    callback(true);
+                } else {
+                    server.starting = false;
+                    server.ready = false;
+                    try {
+                        processApi.terminate(server.pid);
+                    } catch (e2) {}
+                    server.pid = null;
+                    if (onFail) return onFail();
+                    callback(false);
+                }
+            }, 250);
         }
 
         if (isWindows) {
-            // Prefer the compiled executable on Windows; fall back to the Python script.
-            startBridge(exePath, [requestPath, responsePath], function () {
-                log("Compiled bridge not available, falling back to Python script", "warn");
-                startBridge(pythonPath, [scriptPath, requestPath, responsePath], null);
+            trySpawn(paths.exePath, ["--server"], function () {
+                log("Compiled bridge failed, trying Python script", "warn");
+                trySpawn(pythonPath, [paths.scriptPath, "--server"], function () {
+                    server.starting = false;
+                    callback(false);
+                });
             });
         } else {
-            startBridge(pythonPath, [scriptPath, requestPath, responsePath], null);
+            trySpawn(pythonPath, [paths.scriptPath, "--server"], function () {
+                server.starting = false;
+                callback(false);
+            });
         }
     }
 
-    function monitorProcess(pid, responsePath, callback) {
-        var stderr = "";
-        var finished = false;
-        try {
-            processApi.stderr(pid, function (chunk) {
-                if (chunk) stderr += chunk;
-            });
-        } catch (e) {}
-
-        var checkTimer = null;
-        var timeoutId = null;
-
-        function finish(error, response) {
-            if (finished) return;
-            finished = true;
-            if (checkTimer) clearInterval(checkTimer);
-            if (timeoutId) clearTimeout(timeoutId);
-            try {
-                processApi.terminate(pid);
-            } catch (e) {}
-            if (error) {
-                callback({ success: false, error: error + (stderr ? "\n" + stderr : "") });
-            } else {
-                callback(response);
-            }
+    function sendRequest(request, callback) {
+        if (!server.ready || server.pid === null) {
+            callback({ success: false, error: "Bridge server not running" });
+            return;
         }
 
-        checkTimer = setInterval(function () {
-            var running = processApi.isRunning(pid);
-            if (running.err === 0 && running.data) {
+        server.requestCounter += 1;
+        var reqId = "req_" + server.requestCounter;
+        request.request_id = reqId;
+
+        var timeoutId = setTimeout(function () {
+            var cb = server.pending ? server.pending.callback : null;
+            server.pending = null;
+            if (cb) cb({ success: false, error: "Bridge server timed out" });
+        }, 180000);
+
+        server.pending = { id: reqId, callback: callback, timeoutId: timeoutId };
+
+        var line = JSON.stringify(request) + "\n";
+        try {
+            processApi.stdin(server.pid, line);
+        } catch (e) {
+            clearTimeout(timeoutId);
+            server.pending = null;
+            callback({ success: false, error: "Could not write to bridge: " + e.message });
+        }
+    }
+
+    function runPythonBridge(op, clips, settings, callback) {
+        server.workDir = ensureWorkDir();
+        startServer(function (ok) {
+            if (!ok) {
+                callback({ success: false, error: "Could not start bridge server" });
                 return;
             }
-
-            if (running.err !== 0) {
-                return finish("process.isRunning error: " + running.err);
-            }
-
-            try {
-                var data = readFileSafe(responsePath);
-                var resp = JSON.parse(data);
-                return finish(null, resp);
-            } catch (e) {
-                return finish("Could not read bridge response: " + e.message);
-            }
-        }, 200);
-
-        // Safety timeout (120 seconds).
-        timeoutId = setTimeout(function () {
-            finish("Bridge timed out");
-        }, 120000);
+            sendRequest({ op: op, clips: clips, settings: settings }, callback);
+        });
     }
 
     function runSync(settings) {
@@ -396,6 +470,19 @@
         initRuntime();
         if (!runtimeReady && runtimeError) {
             log(runtimeError, "warn");
+        }
+
+        // Terminate the background bridge when the panel is closed.
+        if (typeof window !== "undefined") {
+            window.addEventListener("beforeunload", function () {
+                if (server.pid !== null) {
+                    try {
+                        processApi.terminate(server.pid);
+                    } catch (e) {}
+                    server.pid = null;
+                    server.ready = false;
+                }
+            });
         }
     }
 
