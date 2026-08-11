@@ -94,12 +94,46 @@ var host = host || {};
     }
 
     /**
-     * Collect the currently selected TrackItems, first by seq.getSelection(),
-     * then (if that fails) by iterating every track and calling isSelected().
+     * Collect selected TrackItems by walking every video/audio track and
+     * checking isSelected(). This directly yields the correct track and index,
+     * avoiding object-identity issues with seq.getSelection().
      */
     function getSelectedTrackItems(seq) {
         var items = [];
-        if (seq.getSelection) {
+        var ti, ci, track, c;
+
+        // Video tracks
+        for (ti = 0; ti < seq.videoTracks.numTracks; ti++) {
+            try {
+                track = seq.videoTracks[ti];
+                for (ci = 0; ci < track.clips.numItems; ci++) {
+                    c = track.clips[ci];
+                    try {
+                        if (c.isSelected && c.isSelected()) {
+                            items.push({ clip: c, trackIndex: ti, clipIndex: ci, isAudio: false });
+                        }
+                    } catch (e2) {}
+                }
+            } catch (e) {}
+        }
+
+        // Audio tracks
+        for (ti = 0; ti < seq.audioTracks.numTracks; ti++) {
+            try {
+                track = seq.audioTracks[ti];
+                for (ci = 0; ci < track.clips.numItems; ci++) {
+                    c = track.clips[ci];
+                    try {
+                        if (c.isSelected && c.isSelected()) {
+                            items.push({ clip: c, trackIndex: ti, clipIndex: ci, isAudio: true });
+                        }
+                    } catch (e2) {}
+                }
+            } catch (e) {}
+        }
+
+        // Fallback if isSelected is not available: try seq.getSelection().
+        if (items.length === 0 && seq.getSelection) {
             try {
                 var sel = seq.getSelection();
                 if (sel) {
@@ -107,32 +141,17 @@ var host = host || {};
                     if (typeof sel.length === "number") count = sel.length;
                     else if (typeof sel.numItems === "number") count = sel.numItems;
                     for (var i = 0; i < count; i++) {
-                        if (sel[i]) items.push(sel[i]);
+                        var clip = sel[i];
+                        if (!clip) continue;
+                        var info = findTrackAndClipIndex(seq, clip);
+                        if (info) {
+                            items.push({ clip: clip, trackIndex: info.trackIndex, clipIndex: info.clipIndex, isAudio: info.isAudio });
+                        }
                     }
                 }
             } catch (e) {}
         }
-        if (items.length === 0) {
-            var ti, ci, track, c;
-            for (ti = 0; ti < seq.videoTracks.numTracks; ti++) {
-                try {
-                    track = seq.videoTracks[ti];
-                    for (ci = 0; ci < track.clips.numItems; ci++) {
-                        c = track.clips[ci];
-                        try { if (c.isSelected()) items.push(c); } catch (e2) {}
-                    }
-                } catch (e) {}
-            }
-            for (ti = 0; ti < seq.audioTracks.numTracks; ti++) {
-                try {
-                    track = seq.audioTracks[ti];
-                    for (ci = 0; ci < track.clips.numItems; ci++) {
-                        c = track.clips[ci];
-                        try { if (c.isSelected()) items.push(c); } catch (e2) {}
-                    }
-                } catch (e) {}
-            }
-        }
+
         return items;
     }
 
@@ -190,6 +209,8 @@ var host = host || {};
 
     /**
      * Get selected clips info from the active sequence.
+     * Also stores the actual clip references so applyPlan can use them directly,
+     * avoiding index-shift or name-lookup problems.
      */
     host.getSelectedClips = function () {
         var seq = app.project.activeSequence;
@@ -202,17 +223,13 @@ var host = host || {};
 
         var clips = [];
         for (var i = 0; i < selected.length; i++) {
-            var clip = selected[i];
-            if (!clip) continue;
+            var item = selected[i];
+            if (!item || !item.clip) continue;
 
-            var info = findTrackAndClipIndex(seq, clip);
-            var isAudio = false;
-            try {
-                if (clip.mediaType === "Audio" || clip.type === 2) isAudio = true;
-            } catch (e) {}
-            var trackIndex = info ? info.trackIndex : -1;
-            var clipIndex = info ? info.clipIndex : -1;
-            if (info && info.isAudio) isAudio = true;
+            var clip = item.clip;
+            var trackIndex = item.trackIndex;
+            var clipIndex = item.clipIndex;
+            var isAudio = item.isAudio;
 
             var name = "";
             try { name = clip.name; } catch (e) {}
@@ -230,6 +247,10 @@ var host = host || {};
         }
 
         if (clips.length === 0) return error("No valid clips in selection");
+
+        // Persist selected clip references for applyPlan.
+        try { host.__clipStore = selected; } catch (e) {}
+
         return result({ clips: clips });
     };
 
@@ -346,18 +367,40 @@ var host = host || {};
         });
     };
 
+    function getStoredClip(op) {
+        try {
+            if (host.__clipStore && host.__clipStore[op.id]) {
+                return host.__clipStore[op.id];
+            }
+        } catch (e) {}
+        return null;
+    }
+
     function moveClip(seq, op) {
         try {
-            var clip = findClipByIndex(seq, op.trackIndex, op.clipIndex, op.isAudio);
-            if (!clip) return { success: false, error: "Clip not found at track " + op.trackIndex + " index " + op.clipIndex };
+            // Prefer the exact clip object captured during getSelectedClips.
+            var item = getStoredClip(op);
+            var clip = null, isAudio = false, origTrackIndex = -1, origClipIndex = -1;
+            if (item && item.clip) {
+                clip = item.clip;
+                isAudio = item.isAudio;
+                origTrackIndex = item.trackIndex;
+                origClipIndex = item.clipIndex;
+            } else {
+                clip = findClipByIndex(seq, op.trackIndex, op.clipIndex, op.isAudio);
+                if (!clip) return { success: false, error: "Clip not found at track " + op.trackIndex + " index " + op.clipIndex };
+                isAudio = op.isAudio;
+                origTrackIndex = op.trackIndex;
+                origClipIndex = op.clipIndex;
+            }
 
-            var tracks = op.isAudio ? seq.audioTracks : seq.videoTracks;
-            var targetTrackIndex = (op.newTrackIndex !== undefined) ? op.newTrackIndex : op.trackIndex;
+            var tracks = isAudio ? seq.audioTracks : seq.videoTracks;
+            var targetTrackIndex = (op.newTrackIndex !== undefined) ? op.newTrackIndex : origTrackIndex;
             var projectItem = null;
             try { projectItem = clip.projectItem; } catch (e) {}
 
             // Distribute to a different track by removing the original and overwriting on the target track.
-            if (targetTrackIndex !== op.trackIndex) {
+            if (targetTrackIndex !== origTrackIndex) {
                 if (targetTrackIndex < 0 || targetTrackIndex >= tracks.numTracks) {
                     return { success: false, error: "Target track index out of range: " + targetTrackIndex };
                 }
@@ -428,7 +471,7 @@ var host = host || {};
             }
 
             if (op.gainDb) {
-                var gainClip = op.isAudio ? clip : (findLinkedAudioClip(seq, op) || clip);
+                var gainClip = isAudio ? clip : (findLinkedAudioClip(seq, op) || clip);
                 setClipGainOnClip(gainClip, op.gainDb);
             }
             return { success: true };
@@ -458,10 +501,18 @@ var host = host || {};
 
     function setClipGain(seq, op) {
         try {
-            var isAudio = op.isAudio === true;
-            var clip = findClipByIndex(seq, op.trackIndex, op.clipIndex, isAudio);
-            if (!clip && !isAudio) {
-                clip = findLinkedAudioClip(seq, op);
+            var item = getStoredClip(op);
+            var isAudio = false;
+            var clip = null;
+            if (item && item.clip) {
+                clip = item.clip;
+                isAudio = item.isAudio;
+            } else {
+                isAudio = op.isAudio === true;
+                clip = findClipByIndex(seq, op.trackIndex, op.clipIndex, isAudio);
+                if (!clip && !isAudio) {
+                    clip = findLinkedAudioClip(seq, op);
+                }
             }
             if (!clip) return { success: false, error: "Could not find clip for gain adjustment" };
 

@@ -155,6 +155,15 @@ def resolve_ffmpeg_path(settings):
 def run_ffmpeg(ffmpeg_path, args, capture_stdout=True, timeout=None):
     """Run ffmpeg with the provided args. Returns stdout or stderr output."""
     cmd = [ffmpeg_path] + args
+
+    startupinfo = None
+    creationflags = 0
+    if sys.platform == "win32":
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
+        creationflags = subprocess.CREATE_NO_WINDOW
+
     try:
         if capture_stdout:
             result = subprocess.run(
@@ -163,6 +172,8 @@ def run_ffmpeg(ffmpeg_path, args, capture_stdout=True, timeout=None):
                 stderr=subprocess.PIPE,
                 stdin=subprocess.DEVNULL,
                 timeout=timeout,
+                startupinfo=startupinfo,
+                creationflags=creationflags,
             )
         else:
             result = subprocess.run(
@@ -171,6 +182,8 @@ def run_ffmpeg(ffmpeg_path, args, capture_stdout=True, timeout=None):
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
                 timeout=timeout,
+                startupinfo=startupinfo,
+                creationflags=creationflags,
             )
         return result.returncode, result.stdout, result.stderr if capture_stdout else result.stdout
     except Exception as e:
