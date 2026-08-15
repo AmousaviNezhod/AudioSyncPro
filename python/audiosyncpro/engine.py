@@ -210,14 +210,14 @@ def _pairwise_results_for_group(
     return results
 
 
-def _group_clips(clips: List[TimelineClip], results: List[PairwiseResult]) -> Tuple[List[List[int]], List[int]]:
+def _group_clips(clips: List[TimelineClip], results: List[PairwiseResult], threshold: float = 0.45) -> Tuple[List[List[int]], List[int]]:
     by_id = {c.id: c for c in clips}
     indices = list(by_id.keys())
     n = len(indices)
     id_to_pos = {idx: i for i, idx in enumerate(indices)}
     adj = [[] for _ in range(n)]
     for r in results:
-        if r.confidence >= 0.45:
+        if r.confidence >= threshold and r.diagnostics.get("accepted", False):
             i = id_to_pos.get(r.ref_index)
             j = id_to_pos.get(r.target_index)
             if i is not None and j is not None:
@@ -288,7 +288,7 @@ def process_sync_request(request: dict) -> dict:
     pairwise = _pairwise_results_for_group(analyzed, settings)
 
     # Grouping.
-    groups, orphans = _group_clips(analyzed, pairwise)
+    groups, orphans = _group_clips(analyzed, pairwise, threshold=settings.match_threshold)
 
     # Global optimization per group.
     group_offsets: Dict[int, float] = {}
