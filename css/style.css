@@ -343,7 +343,9 @@ html, body {
 .progress-panel {
     padding: 12px 14px;
     display: none;
-    animation: fadeIn 0.3s ease;
+    opacity: 1;
+    transform: none;
+    animation: none;
 }
 
 .progress-header {
