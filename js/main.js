@@ -384,8 +384,10 @@
                     return;
                 }
 
-                log("گروه‌های سینک: " + ((resp.data && resp.data.groups) ? resp.data.groups.length : 0), "info");
-                callHost("host.applyPlan", { operations: resp.data.operations }, function (res) {
+                var operations = resp.operations || (resp.data && resp.data.operations) || [];
+                var groups = resp.groups || (resp.data && resp.data.groups) || [];
+                log("گروه‌های سینک: " + groups.length, "info");
+                callHost("host.applyPlan", { operations: operations }, function (res) {
                     AudioSyncProUI.setBusy(false);
                     AudioSyncProUI.setProgress(100, "تمام");
                     if (!res.success) {
@@ -432,10 +434,11 @@
                     return;
                 }
 
-                var operations = (resp.data && resp.data.operations) ? resp.data.operations : [];
+                var operations = resp.operations || (resp.data && resp.data.operations) || [];
+                var gained = resp.gained || (resp.data && resp.data.gained) || 0;
                 for (var i = 0; i < operations.length; i++) {
                     var op = operations[i];
-                    log(op.name + " -> gain " + op.gainDb.toFixed(2) + " dB", "info");
+                    log(op.name + " -> gain " + (op.gainDb || 0).toFixed(2) + " dB", "info");
                 }
 
                 callHost("host.applyPlan", { operations: operations }, function (res) {
