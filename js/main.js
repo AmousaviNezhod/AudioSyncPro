@@ -58,7 +58,7 @@
             runtimeError = "CEP fs API not available";
             return false;
         }
-        if (!processApi) {
+        if (!processApi || typeof processApi.createProcess !== "function") {
             runtimeError = "CEP process API not available";
             return false;
         }
@@ -189,12 +189,25 @@
             if (!line) continue;
             try {
                 var resp = JSON.parse(line);
+                // Startup handshake: any valid JSON response from the freshly
+                // spawned server means stdio is alive. We use a ping, but a
+                // sync response that arrives before we mark ready is accepted
+                // as a sign the server is up.
+                if (server.starting && (resp.pong || resp.success === true)) {
+                    markServerReady(true);
+                }
                 if (server.pending) {
+                    // Optional request-id correlation, when the server echoes it.
+                    if (resp.request_id && server.pending.id &&
+                        resp.request_id !== server.pending.id) {
+                        log("ردیف درخواست نامعتبر از موتور: " + resp.request_id, "warn");
+                        continue;
+                    }
                     clearTimeout(server.pending.timeoutId);
                     var cb = server.pending.callback;
                     server.pending = null;
                     cb(resp);
-                } else {
+                } else if (!resp.pong) {
                     log("پاسخ غیرمنتظره از موتور: " + line.substring(0, 80), "warn");
                 }
             } catch (e) {
@@ -212,13 +225,17 @@
             var line = lines[i].trim();
             if (!line) continue;
             log("[موتور] " + line, "info");
-            if (!server.ready && line.indexOf("server started") !== -1) {
+            if (server.starting && line.indexOf("server started") !== -1) {
                 markServerReady(true);
             }
         }
     }
 
     function onServerQuit() {
+        if (server.starting) {
+            failStart("موتور در حین راه‌اندازی بسته شد");
+            return;
+        }
         if (server.ready) {
             log("موتور بسته شد", "warn");
         }
@@ -296,9 +313,14 @@
         var paths = getBridgePath();
         log("در حال راه‌اندازی موتور...", "info");
 
-        var procRes = processApi.createProcess(paths.exePath, "--server");
-        if (procRes.err !== 0) {
-            return failStart("createProcess returned error " + procRes.err + " for " + paths.exePath);
+        var procRes;
+        try {
+            procRes = processApi.createProcess(paths.exePath, "--server");
+        } catch (e) {
+            return failStart("createProcess threw: " + e.message);
+        }
+        if (!procRes || procRes.err !== 0) {
+            return failStart("createProcess returned error " + (procRes ? procRes.err : "no result") + " for " + paths.exePath);
         }
 
         server.pid = procRes.data;
@@ -306,10 +328,19 @@
         try { processApi.stderr(server.pid, onServerStderr); } catch (e) {}
         try { processApi.onquit(server.pid, onServerQuit); } catch (e) {}
 
-        // If we do not see the "server started" line within 30 seconds, give up.
+        // Send an immediate ping. This is the most reliable startup handshake
+        // because it confirms both stdin and stdout are connected.
+        try {
+            var pingLine = JSON.stringify({ action: "ping", request_id: "asp_startup" }) + "\n";
+            processApi.stdin(server.pid, pingLine);
+        } catch (e) {
+            return failStart("could not write startup ping: " + e.message);
+        }
+
+        // If we do not get any response within 30 seconds, give up.
         // (The onefile executable may need a few seconds to extract on first run.)
         server.startTimeout = setTimeout(function () {
-            failStart("server did not report ready in time");
+            failStart("server did not respond to startup ping in time");
         }, 30000);
     }
 
