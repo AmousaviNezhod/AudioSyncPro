@@ -170,7 +170,7 @@ var host = host || {};
             var item = raw[i];
             if (!item || !item.clip) continue;
             var sig = getClipSignature(item.clip);
-            var key = sig.name + "|" + sig.start.toFixed(3) + "|" + sig.inPoint.toFixed(3) + "|" + sig.outPoint.toFixed(3);
+            var key = sig.mediaPath + "|" + sig.start.toFixed(3) + "|" + sig.inPoint.toFixed(3) + "|" + sig.outPoint.toFixed(3);
             if (seen[key]) {
                 if (!item.isAudio && seen[key].isAudio) {
                     seen[key] = item;
@@ -188,14 +188,16 @@ var host = host || {};
 
     function getClipSignature(clip) {
         var name = "";
+        var mediaPath = "";
         var start = 0.0, end = 0.0, inPoint = 0.0, outPoint = 0.0, nodeId = "";
         try { name = String(clip.name); } catch (e) {}
+        try { mediaPath = getClipPath(clip); } catch (e) {}
         try { start = parseFloat(clip.start.seconds); } catch (e) {}
         try { end = parseFloat(clip.end.seconds); } catch (e) {}
         try { inPoint = parseFloat(clip.inPoint.seconds); } catch (e) {}
         try { outPoint = parseFloat(clip.outPoint.seconds); } catch (e) {}
         try { nodeId = String(clip.nodeId); } catch (e) {}
-        return { name: name, start: start, end: end, inPoint: inPoint, outPoint: outPoint, nodeId: nodeId };
+        return { name: name, mediaPath: mediaPath, start: start, end: end, inPoint: inPoint, outPoint: outPoint, nodeId: nodeId };
     }
 
     function isSameClip(candidate, sig) {
@@ -204,15 +206,25 @@ var host = host || {};
             try { cnode = String(candidate.nodeId); } catch (e) {}
             if (sig.nodeId && cnode && cnode === sig.nodeId) return true;
 
+            var cpath = "";
+            try { cpath = getClipPath(candidate); } catch (e) {}
+            if (sig.mediaPath && cpath && cpath === sig.mediaPath) {
+                // same media; verify timeline bounds
+                var cstart = 0.0, cend = 0.0;
+                try { cstart = parseFloat(candidate.start.seconds); } catch (e) {}
+                try { cend = parseFloat(candidate.end.seconds); } catch (e) {}
+                if (Math.abs(cstart - sig.start) < 0.001) return true;
+            }
+
             var cname = "";
             try { cname = String(candidate.name); } catch (e) {}
             if (cname !== sig.name) return false;
 
-            var cstart = 0.0, cend = 0.0;
-            try { cstart = parseFloat(candidate.start.seconds); } catch (e) {}
-            try { cend = parseFloat(candidate.end.seconds); } catch (e) {}
-            if (Math.abs(cstart - sig.start) > 0.001) return false;
-            if (Math.abs(cend - sig.end) > 0.001) return false;
+            var cstart2 = 0.0, cend2 = 0.0;
+            try { cstart2 = parseFloat(candidate.start.seconds); } catch (e) {}
+            try { cend2 = parseFloat(candidate.end.seconds); } catch (e) {}
+            if (Math.abs(cstart2 - sig.start) > 0.001) return false;
+            if (Math.abs(cend2 - sig.end) > 0.001) return false;
             return true;
         } catch (e) {}
         return false;
@@ -221,18 +233,23 @@ var host = host || {};
     function findTrackAndClipIndex(seq, clip) {
         var sig = getClipSignature(clip);
         var ti, ci, track, c;
-        for (ti = 0; ti < seq.videoTracks.numTracks; ti++) {
-            track = seq.videoTracks[ti];
-            for (ci = 0; ci < track.clips.numItems; ci++) {
-                c = track.clips[ci];
-                if (isSameClip(c, sig)) return { trackIndex: ti, clipIndex: ci, isAudio: false };
+        var isAudio = isAudioClip(clip);
+        if (!isAudio) {
+            for (ti = 0; ti < seq.videoTracks.numTracks; ti++) {
+                track = seq.videoTracks[ti];
+                for (ci = 0; ci < track.clips.numItems; ci++) {
+                    c = track.clips[ci];
+                    if (isSameClip(c, sig)) return { trackIndex: ti, clipIndex: ci, isAudio: false };
+                }
             }
         }
-        for (ti = 0; ti < seq.audioTracks.numTracks; ti++) {
-            track = seq.audioTracks[ti];
-            for (ci = 0; ci < track.clips.numItems; ci++) {
-                c = track.clips[ci];
-                if (isSameClip(c, sig)) return { trackIndex: ti, clipIndex: ci, isAudio: true };
+        if (isAudio || !isAudio) {
+            for (ti = 0; ti < seq.audioTracks.numTracks; ti++) {
+                track = seq.audioTracks[ti];
+                for (ci = 0; ci < track.clips.numItems; ci++) {
+                    c = track.clips[ci];
+                    if (isSameClip(c, sig)) return { trackIndex: ti, clipIndex: ci, isAudio: true };
+                }
             }
         }
         return null;
@@ -460,60 +477,55 @@ var host = host || {};
             var vTrack = seq.videoTracks[targetVTrack];
             var aTrack = seq.audioTracks[targetATrack];
 
-            // Use a "safe insert" at the end of the target tracks, then move to the
-            // final time. This avoids the ripple/overwrite bugs that occur when
-            // inserting directly onto a track that already contains clips.
-            var safeV = getTrackEndSeconds(vTrack);
-            var safeA = getTrackEndSeconds(aTrack);
-            var safeTime = Math.max(safeV, safeA);
-            var safeTimeObj = new Time();
-            safeTimeObj.seconds = safeTime;
-
-            var newVClip = null;
-            var newAClip = null;
-            var usedSafeInsert = false;
-
-            try {
-                seq.insertClip(projectItem, safeTimeObj, targetVTrack, targetATrack);
-                usedSafeInsert = true;
-                if (vTrack.clips && vTrack.clips.numItems > 0) newVClip = vTrack.clips[vTrack.clips.numItems - 1];
-                if (aTrack.clips && aTrack.clips.numItems > 0) newAClip = aTrack.clips[aTrack.clips.numItems - 1];
-            } catch (e1) {
-                // Fallback: direct overwrite at target time.
-                try {
-                    var targetTimeObj = new Time();
-                    targetTimeObj.seconds = op.newStartSeconds;
-                    seq.overwriteClip(projectItem, targetTimeObj, targetVTrack, targetATrack);
-                    newVClip = findClipByProjectAndStart(vTrack, projectItem, op.newStartSeconds);
-                    if (!isAudio) newAClip = findClipByProjectAndStart(aTrack, projectItem, op.newStartSeconds);
-                } catch (e2) {
-                    return { success: false, error: "Could not insert/overwrite clip on target tracks: " + e2.toString() };
-                }
-            }
-
-            // Remove originals (TrackItem.remove only removes one track item).
+            // Remove the originals first so the overwrite/insert does not conflict
+            // with them and does not create duplicates.
             try { clip.remove(false, false); } catch (e) {}
             if (origAudio) {
                 try { origAudio.remove(false, false); } catch (e) {}
             }
 
-            // If we used safe-insert, shift the new clips to their final time.
-            if (usedSafeInsert) {
-                var delta = op.newStartSeconds - safeTime;
-                if (Math.abs(delta) > 0.0001) {
-                    var deltaTime = new Time();
-                    deltaTime.seconds = delta;
-                    if (newVClip) {
-                        try { newVClip.move(deltaTime); } catch (e) {}
-                    }
-                    if (newAClip) {
-                        // Avoid double-moving if the video move already dragged linked audio.
-                        var expectedA = safeTime + delta;
-                        var currentA = getClipStartSeconds(newAClip);
-                        if (Math.abs(currentA - expectedA) > 0.001) {
-                            try { newAClip.move(deltaTime); } catch (e) {}
+            var newVClip = null;
+            var newAClip = null;
+            var usedSafeInsert = false;
+
+            // Primary: overwrite at the final time. Overwrite avoids ripple and
+            // works on an empty target track or one where the originals were removed.
+            try {
+                var targetTimeObj = new Time();
+                targetTimeObj.seconds = op.newStartSeconds;
+                seq.overwriteClip(projectItem, targetTimeObj, targetVTrack, targetATrack);
+                newVClip = findClipByProjectAndStart(vTrack, projectItem, op.newStartSeconds);
+                if (!isAudio) newAClip = findClipByProjectAndStart(aTrack, projectItem, op.newStartSeconds);
+            } catch (e1) {
+                // Fallback: safe insert at the end of the target tracks, then move.
+                try {
+                    var safeV = getTrackEndSeconds(vTrack);
+                    var safeA = getTrackEndSeconds(aTrack);
+                    var safeTime = Math.max(safeV, safeA);
+                    var safeTimeObj = new Time();
+                    safeTimeObj.seconds = safeTime;
+                    seq.insertClip(projectItem, safeTimeObj, targetVTrack, targetATrack);
+                    usedSafeInsert = true;
+                    if (vTrack.clips && vTrack.clips.numItems > 0) newVClip = vTrack.clips[vTrack.clips.numItems - 1];
+                    if (aTrack.clips && aTrack.clips.numItems > 0) newAClip = aTrack.clips[aTrack.clips.numItems - 1];
+
+                    var delta = op.newStartSeconds - safeTime;
+                    if (Math.abs(delta) > 0.0001) {
+                        var deltaTime = new Time();
+                        deltaTime.seconds = delta;
+                        if (newVClip) {
+                            try { newVClip.move(deltaTime); } catch (e) {}
+                        }
+                        if (newAClip) {
+                            var expectedA = safeTime + delta;
+                            var currentA = getClipStartSeconds(newAClip);
+                            if (Math.abs(currentA - expectedA) > 0.001) {
+                                try { newAClip.move(deltaTime); } catch (e) {}
+                            }
                         }
                     }
+                } catch (e2) {
+                    return { success: false, error: "Could not insert/overwrite clip on target tracks: " + e2.toString() };
                 }
             }
 

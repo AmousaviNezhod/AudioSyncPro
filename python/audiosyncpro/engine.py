@@ -7,10 +7,10 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from .algorithms.envelope_correlation import envelope_correlation
-from .algorithms.gcc_phat import gcc_phat_pairwise
+from .algorithms.gcc_phat import gcc_phat, pearson_at_lag
 from .algorithms.spectral_correlation import mel_spectral_gcc_phat
 from .confidence import compute_confidence, is_match_accepted, overlap_ratio, peak_metrics
-from .decoder import analyze_clip, resolve_ffmpeg_path
+from .decoder import analyze_clip, extract_audio, resolve_ffmpeg_path
 from .drift import estimate_drift
 from .multicam import build_weighted_graph, find_connected_components, optimize_offsets
 from .plan import build_plan
@@ -19,22 +19,14 @@ from .resampler import downsample_decimate
 from .types import PairwiseResult, SyncDiagnostics, SyncResult, TimelineClip
 
 
-def _prepare_samples(samples: np.ndarray, sample_rate: int, coarse_rate: int) -> Tuple[np.ndarray, np.ndarray]:
-    """Return preprocessed full-rate and coarse-rate arrays."""
-    x = preprocess(samples, target_rms=0.1, pre_emphasis_coeff=0.97)
-    if sample_rate == coarse_rate:
-        return x, x.copy()
-    x_coarse = downsample_decimate(x, sample_rate, coarse_rate)
-    return x, x_coarse
-
-
 def _pairwise_sync(
     ref: TimelineClip,
     target: TimelineClip,
     settings,
+    ffmpeg_path: str,
     stage: str = "coarse_fine",
 ) -> PairwiseResult:
-    from .types import SyncSettings, seconds_to_samples
+    from .types import SyncSettings
 
     if isinstance(settings, dict):
         settings = SyncSettings(**settings)
@@ -43,80 +35,122 @@ def _pairwise_sync(
     coarse_sr = settings.effective_coarse_sample_rate()
     max_offset = settings.max_offset_seconds
     fine_search = settings.fine_search_seconds
-
-    ref_full, ref_coarse = _prepare_samples(ref.samples, sr, coarse_sr)
-    tgt_full, tgt_coarse = _prepare_samples(target.samples, sr, coarse_sr)
+    max_analyze = settings.max_analyze_seconds
 
     start = time.perf_counter()
-    coarse_offset = None
-    coarse_conf = 0.0
-    coarse_peak = 0.0
-    method = "gcc_phat"
 
-    # Stage A: coarse search using envelope/spectral if clips long.
-    if stage in ("coarse_fine", "coarse_only") and len(ref_full) / sr > 2.0:
-        env_res = envelope_correlation(ref_full, tgt_full, sr, max_offset_seconds=max_offset)
-        mel_res = mel_spectral_gcc_phat(
-            ref_full,
-            tgt_full,
-            sr,
-            max_offset_seconds=max_offset,
-            n_fft=1024,
-            n_mels=40,
-        )
-        # Pick the better coarse result by Pearson confidence.
-        if mel_res["correlation"] > env_res["correlation"]:
-            coarse_offset = mel_res["offset_seconds"]
-            coarse_conf = mel_res["correlation"]
-            coarse_peak = mel_res["raw_peak"]
-        else:
-            coarse_offset = env_res["offset_seconds"]
-            coarse_conf = env_res["correlation"]
-            coarse_peak = env_res["raw_peak"]
+    ref_c = ref.coarse_samples
+    tgt_c = target.coarse_samples
+    if ref_c is None or tgt_c is None or len(ref_c) == 0 or len(tgt_c) == 0:
+        raise RuntimeError("missing coarse audio samples")
 
-    # Stage B: fine GCC-PHAT.
-    fine_res = gcc_phat_pairwise(
-        ref_full,
-        tgt_full,
-        sr,
-        max_offset_seconds=max_offset,
-        coarse_offset_seconds=coarse_offset,
-        fine_search_seconds=fine_search,
-    )
+    ref_dur = ref.media_duration_seconds or (ref.media_info.duration_seconds if ref.media_info else ref.duration_seconds)
+    tgt_dur = target.media_duration_seconds or (target.media_info.duration_seconds if target.media_info else target.duration_seconds)
+    ref_in = ref.in_point_seconds
+    tgt_in = target.in_point_seconds
 
-    # Refine candidate list for diagnostics.
-    peak_value = fine_res["raw_peak"]
-    best_idx = int(round(fine_res["lag_samples"]))
-    # For peak ratio, build a correlation surface around the peak is hard.
-    # Use a synthetic surface from GCC: search vector.
-    # Recompute full GCC to compute metrics.
-    try:
-        from .algorithms.gcc_phat import gcc_phat
-        full_res = gcc_phat(ref_full, tgt_full, sr, max_offset_seconds=max_offset)
-        lag = int(round(full_res["lag_samples"]))
-    except Exception:
-        full_res = fine_res
-        lag = 0
+    coarse_candidates = []
+    # Stage A: coarse search on downsampled, full-duration audio.
+    if stage in ("coarse_fine", "coarse_only") and len(ref_c) / coarse_sr > 2.0:
+        ref_c_proc = preprocess(ref_c, target_rms=0.1, pre_emphasis_coeff=0.97)
+        tgt_c_proc = preprocess(tgt_c, target_rms=0.1, pre_emphasis_coeff=0.97)
 
-    # For diagnostics, use a brute-force window around estimated lag.
-    n = max(len(ref_full), len(tgt_full))
-    search_vals = np.zeros(2 * max_offset * sr + 1, dtype=np.float64) if False else None
+        try:
+            env_res = envelope_correlation(ref_c_proc, tgt_c_proc, coarse_sr, max_offset_seconds=max_offset)
+            coarse_candidates.append((env_res["offset_seconds"], "envelope", env_res["correlation"]))
+        except Exception:
+            env_res = None
+
+        try:
+            mel_res = mel_spectral_gcc_phat(
+                ref_c_proc,
+                tgt_c_proc,
+                coarse_sr,
+                max_offset_seconds=max_offset,
+                n_fft=1024,
+                n_mels=40,
+            )
+            coarse_candidates.append((mel_res["offset_seconds"], "mel", mel_res["correlation"]))
+        except Exception:
+            mel_res = None
+
+    if not coarse_candidates:
+        coarse_candidates = [(0.0, "gcc_phat", 0.0)]
+
+    # Stage B: evaluate each coarse candidate by extracting the overlapping fine-rate
+    # window and running GCC-PHAT. Pick the candidate with the strongest fine peak.
+    fine_dur = max_analyze + 2.0 * fine_search
+    fine_search_total = max(fine_search, 2.0 / coarse_sr if coarse_sr else 2.0)
+
+    best_candidate = None
+    best_score = -1.0
+    chosen_coarse_offset = 0.0
+    chosen_coarse_conf = 0.0
+    chosen_method = "gcc_phat"
+    chosen_fine_res = None
+    chosen_ref_fine = None
+    chosen_tgt_fine = None
+    chosen_overlap_dur = 0.0
+
+    for coarse_offset, cand_method, coarse_conf in coarse_candidates:
+        try:
+            ref_start = min(max(0.0, -coarse_offset) + ref_in, ref_dur)
+            tgt_start = min(max(0.0, coarse_offset) + tgt_in, tgt_dur)
+            overlap_dur = min(ref_dur - ref_start, tgt_dur - tgt_start, fine_dur)
+            if overlap_dur < 0.5:
+                ref_start = ref_in
+                tgt_start = tgt_in
+                overlap_dur = min(ref_dur - ref_start, tgt_dur - tgt_start, fine_dur)
+            if overlap_dur < 0.1:
+                continue
+
+            timeout = max(300.0, overlap_dur * 10.0)
+            ref_fine = extract_audio(ffmpeg_path, ref.media_path, sample_rate=sr, start_seconds=ref_start, duration_seconds=overlap_dur, mono=True, timeout=timeout)
+            tgt_fine = extract_audio(ffmpeg_path, target.media_path, sample_rate=sr, start_seconds=tgt_start, duration_seconds=overlap_dur, mono=True, timeout=timeout)
+            ref_fine = preprocess(ref_fine, target_rms=0.1, pre_emphasis_coeff=0.97)
+            tgt_fine = preprocess(tgt_fine, target_rms=0.1, pre_emphasis_coeff=0.97)
+
+            fine_res = gcc_phat(ref_fine, tgt_fine, sr, max_offset_seconds=fine_search_total)
+            score = abs(fine_res["raw_peak"])
+            if score > best_score:
+                best_score = score
+                best_candidate = coarse_offset
+                chosen_coarse_offset = coarse_offset
+                chosen_coarse_conf = coarse_conf
+                chosen_method = f"coarse_{cand_method}_fine_gcc_phat"
+                chosen_fine_res = fine_res
+                chosen_ref_fine = ref_fine
+                chosen_tgt_fine = tgt_fine
+                chosen_overlap_dur = overlap_dur
+        except Exception:
+            continue
+
+    if best_candidate is None or chosen_fine_res is None:
+        raise RuntimeError("no valid coarse candidate produced a fine correlation")
+
+    final_offset_s = chosen_coarse_offset + chosen_fine_res["offset_seconds"]
+
+    # Confidence surface around the fine peak (local window only).
+    fine_lag_int = int(round(chosen_fine_res["lag_samples"]))
+    local_window_seconds = 0.05  # 50 ms around the peak is enough to judge sharpness
+    half = min(max(50, int(local_window_seconds * sr)), len(chosen_ref_fine) // 2)
+    corr_vals = [abs(pearson_at_lag(chosen_ref_fine, chosen_tgt_fine, k)) for k in range(fine_lag_int - half, fine_lag_int + half + 1)]
+    corr_arr = np.array(corr_vals, dtype=np.float64)
     peak_ratio = 1.0
     z_score = 0.0
-
-    # Better: compute Pearson correlation surface around the coarse/fine peak.
-    from .algorithms.gcc_phat import pearson_at_lag
-    half = max(1, min(max_offset * sr, 500))
-    corr_vals = []
-    for k in range(lag - half, lag + half + 1):
-        corr_vals.append(abs(pearson_at_lag(ref_full, tgt_full, k)))
-    corr_arr = np.array(corr_vals, dtype=np.float64)
     if corr_arr.size:
         peak_idx = int(np.argmax(corr_arr))
         peak_ratio, z_score = peak_metrics(corr_arr, peak_idx)
 
-    overlap = overlap_ratio(len(ref_full), len(tgt_full), fine_res["lag_samples"])
-    confidence, conf_diag = compute_confidence(fine_res["correlation"], peak_ratio, z_score, overlap)
+    # Overlap based on full media durations and the final offset.
+    if final_offset_s >= 0:
+        overlap_s = max(0.0, min(ref_dur - final_offset_s, tgt_dur))
+    else:
+        overlap_s = max(0.0, min(tgt_dur + final_offset_s, ref_dur))
+    shorter = min(ref_dur, tgt_dur)
+    overlap = overlap_s / shorter if shorter > 0 else 0.0
+
+    confidence, conf_diag = compute_confidence(chosen_fine_res["correlation"], peak_ratio, z_score, overlap)
 
     accepted = is_match_accepted(
         confidence,
@@ -134,43 +168,47 @@ def _pairwise_sync(
     processing_time_ms = (time.perf_counter() - start) * 1000.0
 
     drift_est = None
-    if settings.enable_drift and accepted and overlap > 0.2 and min(len(ref_full), len(tgt_full)) / sr > settings.drift_min_duration:
-        drift_est = estimate_drift(
-            ref_full,
-            tgt_full,
-            sr,
-            fine_res["offset_seconds"],
-            min_duration=settings.drift_min_duration,
-            window_seconds=settings.drift_window_seconds,
-            hop_seconds=settings.drift_hop_seconds,
-        )
+    if settings.enable_drift and accepted and overlap > 0.2 and chosen_overlap_dur > settings.drift_min_duration:
+        try:
+            drift_est = estimate_drift(
+                chosen_ref_fine,
+                chosen_tgt_fine,
+                sr,
+                chosen_fine_res["offset_seconds"],
+                min_duration=settings.drift_min_duration,
+                window_seconds=settings.drift_window_seconds,
+                hop_seconds=settings.drift_hop_seconds,
+            )
+        except Exception:
+            pass
 
     return PairwiseResult(
         ref_index=ref.id,
         target_index=target.id,
-        offset_seconds=fine_res["offset_seconds"],
+        offset_seconds=final_offset_s,
         confidence=confidence,
-        pearson=fine_res["correlation"],
+        pearson=chosen_fine_res["correlation"],
         peak_ratio=peak_ratio,
         z_score=z_score,
         overlap_ratio=overlap,
-        method=method,
-        correlation_peak=fine_res["correlation"],
-        raw_peak=fine_res["raw_peak"],
-        overlap_seconds=overlap * min(len(ref_full), len(tgt_full)) / sr,
+        method=chosen_method,
+        correlation_peak=chosen_fine_res["correlation"],
+        raw_peak=chosen_fine_res["raw_peak"],
+        overlap_seconds=overlap_s,
         processing_time_ms=processing_time_ms,
         drift_estimate=drift_est,
         diagnostics={
-            "coarse_offset": coarse_offset,
-            "coarse_confidence": coarse_conf,
-            "fine_lag_samples": fine_res["lag_samples"],
-            "fine_confidence": fine_res["correlation"],
-            "raw_peak": fine_res["raw_peak"],
+            "coarse_offset": chosen_coarse_offset,
+            "coarse_confidence": chosen_coarse_conf,
+            "fine_lag_samples": chosen_fine_res["lag_samples"],
+            "fine_confidence": chosen_fine_res["correlation"],
+            "raw_peak": chosen_fine_res["raw_peak"],
             "peak_ratio": peak_ratio,
             "z_score": z_score,
             "overlap_ratio": overlap,
             "confidence_breakdown": conf_diag,
             "accepted": accepted,
+            "evaluated_candidates": len(coarse_candidates),
         },
     )
 
@@ -178,15 +216,15 @@ def _pairwise_sync(
 def _pairwise_results_for_group(
     clips: List[TimelineClip],
     settings,
+    ffmpeg_path: str,
 ) -> List[PairwiseResult]:
     results = []
     for i in range(len(clips)):
         for j in range(i + 1, len(clips)):
             try:
-                r = _pairwise_sync(clips[i], clips[j], settings)
+                r = _pairwise_sync(clips[i], clips[j], settings, ffmpeg_path)
                 results.append(r)
-                if r.confidence >= settings.match_threshold:
-                    # Add symmetric edge if match accepted.
+                if r.diagnostics.get("accepted", False) and r.confidence >= settings.match_threshold:
                     sym = PairwiseResult(
                         ref_index=r.target_index,
                         target_index=r.ref_index,
@@ -273,6 +311,8 @@ def process_sync_request(request: dict) -> dict:
                 track_index=int(clip.get("trackIndex", -1)),
                 clip_index=int(clip.get("clipIndex", -1)),
                 is_audio=bool(clip.get("isAudio", False)),
+                coarse_samples=None,
+                coarse_sample_rate=0,
             ))
 
     if len(analyzed) < 2:
@@ -288,7 +328,7 @@ def process_sync_request(request: dict) -> dict:
         }
 
     # Pairwise sync.
-    pairwise = _pairwise_results_for_group(analyzed, settings)
+    pairwise = _pairwise_results_for_group(analyzed, settings, ffmpeg_path)
 
     # Grouping.
     groups, orphans = _group_clips(analyzed, pairwise, threshold=settings.match_threshold)
@@ -334,7 +374,7 @@ def process_sync_request(request: dict) -> dict:
         "maxOffsetSeconds": settings.max_offset_seconds,
         "ffmpegPath": ffmpeg_path,
         "clipErrors": clip_errors,
-        "samplesPresent": [bool(c.samples is not None and len(c.samples) > 0) for c in analyzed],
+        "coarseSamplesPresent": [bool(c.coarse_samples is not None and len(c.coarse_samples) > 0) for c in analyzed],
         "pairwiseCount": len(pairwise),
         "groupCount": len(groups),
         "orphanCount": len(orphans),

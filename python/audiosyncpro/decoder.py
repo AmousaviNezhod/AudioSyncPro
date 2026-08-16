@@ -216,11 +216,11 @@ def extract_audio(
 ) -> np.ndarray:
     """Extract audio to mono/specified sample rate float32 numpy array."""
     args = ["-v", "error", "-nostdin"]
-    if start_seconds and start_seconds > 0:
-        args += ["-ss", str(float(start_seconds))]
+    if start_seconds and start_seconds > 1e-6:
+        args += ["-ss", f"{float(start_seconds):.9f}"]
     args += ["-i", media_path]
     if duration_seconds is not None and duration_seconds > 0:
-        args += ["-t", str(float(duration_seconds))]
+        args += ["-t", f"{float(duration_seconds):.9f}"]
     if mono:
         args += ["-ac", "1"]
     args += [
@@ -290,26 +290,45 @@ def analyze_clip(clip: dict, ffmpeg_path: str, settings) -> TimelineClip:
     if isinstance(settings, dict):
         settings = SyncSettings(**settings)
     media_info = inspect_media(ffmpeg_path, clip["mediaPath"])
-    sample_rate = settings.effective_sample_rate()
+    sr = settings.effective_sample_rate()
+    coarse_sr = settings.effective_coarse_sample_rate()
     max_analyze = settings.max_analyze_seconds
     if max_analyze <= 0:
-        max_analyze = 60.0
-    # Use clip duration or media duration, whichever smaller, capped at max_analyze.
-    duration = clip.get("durationSeconds") or media_info.duration_seconds
-    analyze_duration = min(duration, max_analyze) if duration > 0 else max_analyze
-    samples = extract_audio(
+        max_analyze = 40.0
+    max_offset = settings.max_offset_seconds
+    if max_offset <= 0:
+        max_offset = 30.0
+
+    # For coarse search we need the first (max_offset + max_analyze) seconds of the
+    # source media so we can locate any offset within [-max_offset, +max_offset].
+    duration = media_info.duration_seconds if media_info and media_info.duration_seconds > 0 else clip.get("durationSeconds")
+    if duration is None or duration <= 0:
+        duration = max_offset + max_analyze
+    coarse_duration = min(float(duration), max_offset + max_analyze)
+    if coarse_duration < 1.0:
+        coarse_duration = max_offset + max_analyze
+
+    timeout = max(300.0, coarse_duration * 0.25 + 60.0)
+    coarse_samples = extract_audio(
         ffmpeg_path,
         clip["mediaPath"],
-        sample_rate=sample_rate,
+        sample_rate=coarse_sr,
         start_seconds=0.0,
-        duration_seconds=analyze_duration,
+        duration_seconds=coarse_duration,
         mono=True,
+        timeout=timeout,
     )
+
+    in_point = float(clip.get("inPointSeconds", 0.0) or 0.0)
+    out_point = float(clip.get("outPointSeconds", 0.0) or 0.0)
+    if out_point <= in_point and media_info.duration_seconds > 0:
+        out_point = float(media_info.duration_seconds)
+
     gain_db = 0.0
     max_volume = None
     mean_volume = None
     if settings.normalize_audio:
-        vol = detect_volume(ffmpeg_path, clip["mediaPath"], analyze_duration)
+        vol = detect_volume(ffmpeg_path, clip["mediaPath"], coarse_duration)
         max_volume = vol.get("maxVolume")
         mean_volume = vol.get("meanVolume")
         gain_db = gain_for_normalization(max_volume, settings.target_peak_db)
@@ -324,7 +343,11 @@ def analyze_clip(clip: dict, ffmpeg_path: str, settings) -> TimelineClip:
         clip_index=int(clip.get("clipIndex", -1)),
         is_audio=bool(clip.get("isAudio", False)),
         media_info=media_info,
-        samples=samples,
+        media_duration_seconds=float(media_info.duration_seconds if media_info else 0.0),
+        coarse_samples=coarse_samples,
+        coarse_sample_rate=coarse_sr,
+        in_point_seconds=in_point,
+        out_point_seconds=out_point,
         gain_db=gain_db,
         max_volume=max_volume,
         mean_volume=mean_volume,

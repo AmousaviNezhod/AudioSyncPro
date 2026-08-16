@@ -30,7 +30,12 @@ class TimelineClip:
     is_audio: bool
     media_info: Optional[MediaInfo] = None
     # populated during analysis
-    samples: Optional[Any] = None  # np.ndarray
+    samples: Optional[Any] = None  # np.ndarray (fine-rate window)
+    coarse_samples: Optional[Any] = None  # np.ndarray at coarse_sample_rate
+    coarse_sample_rate: int = 0
+    media_duration_seconds: float = 0.0
+    in_point_seconds: float = 0.0
+    out_point_seconds: float = 0.0
     gain_db: float = 0.0
     max_volume: Optional[float] = None
     mean_volume: Optional[float] = None
@@ -40,8 +45,8 @@ class TimelineClip:
 class SyncSettings:
     preset: str = "balanced"  # fast, balanced, accurate, custom
     sample_rate: int = 16000
-    coarse_sample_rate: int = 4000
-    max_analyze_seconds: float = 60.0
+    coarse_sample_rate: int = 1000
+    max_analyze_seconds: float = 40.0
     max_offset_seconds: float = 30.0
     fine_search_seconds: float = 2.0
     match_threshold: float = 0.45
@@ -101,9 +106,9 @@ class SyncSettings:
 
         # Preset defaults aligned with the UI presets.
         preset_defaults = {
-            "fast": {"sample_rate": 8000, "coarse_sample_rate": 2000, "max_analyze_seconds": 20.0, "max_offset_seconds": 10.0, "fine_search_seconds": 1.0, "match_threshold": 0.35, "min_peak_ratio": 1.3},
-            "balanced": {"sample_rate": 16000, "coarse_sample_rate": 4000, "max_analyze_seconds": 40.0, "max_offset_seconds": 30.0, "fine_search_seconds": 2.0, "match_threshold": 0.40, "min_peak_ratio": 1.3},
-            "accurate": {"sample_rate": 22050, "coarse_sample_rate": 8000, "max_analyze_seconds": 80.0, "max_offset_seconds": 60.0, "fine_search_seconds": 3.0, "match_threshold": 0.45, "min_peak_ratio": 1.4},
+            "fast": {"sample_rate": 8000, "coarse_sample_rate": 1000, "max_analyze_seconds": 20.0, "max_offset_seconds": 10.0, "fine_search_seconds": 1.0, "match_threshold": 0.35, "min_peak_ratio": 1.3},
+            "balanced": {"sample_rate": 16000, "coarse_sample_rate": 1000, "max_analyze_seconds": 40.0, "max_offset_seconds": 30.0, "fine_search_seconds": 2.0, "match_threshold": 0.40, "min_peak_ratio": 1.3},
+            "accurate": {"sample_rate": 22050, "coarse_sample_rate": 2000, "max_analyze_seconds": 80.0, "max_offset_seconds": 60.0, "fine_search_seconds": 3.0, "match_threshold": 0.45, "min_peak_ratio": 1.4},
             "custom": {},
         }
         defaults = preset_defaults.get(preset, preset_defaults["balanced"])

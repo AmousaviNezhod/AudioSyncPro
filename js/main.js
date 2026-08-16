@@ -350,7 +350,7 @@
             var cb = server.pending ? server.pending.callback : null;
             server.pending = null;
             if (cb) cb({ success: false, error: "Bridge server timed out" });
-        }, 180000);
+        }, 600000);
 
         server.pending = { id: reqId, callback: callback, timeoutId: timeoutId };
 
@@ -392,6 +392,22 @@
             log("کلیپ‌های انتخاب‌شده: " + clips.length, "info");
             for (var i = 0; i < clips.length; i++) {
                 log((i + 1) + ". " + clips[i].name + " | track " + clips[i].trackIndex + " | start " + clips[i].startSeconds.toFixed(3) + "s");
+            }
+
+            // Auto-raise maxOffset so the engine can search across the full timeline span.
+            var maxSpan = 0.0;
+            if (clips.length > 1) {
+                var minStart = Infinity, maxStart = -Infinity;
+                for (var i = 0; i < clips.length; i++) {
+                    var s = parseFloat(clips[i].startSeconds) || 0.0;
+                    if (s < minStart) minStart = s;
+                    if (s > maxStart) maxStart = s;
+                }
+                maxSpan = maxStart - minStart;
+            }
+            if (settings.maxOffset < maxSpan + 60.0) {
+                settings.maxOffset = Math.ceil(maxSpan + 60.0);
+                log("حداکثر آفست برای پوشش کلیپ‌ها به " + settings.maxOffset + " ثانیه افزایش یافت", "info");
             }
 
             AudioSyncProUI.setProgress(30, "تحلیل صدا در Python...");

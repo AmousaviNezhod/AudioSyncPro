@@ -92,21 +92,21 @@ def log_mel_spectrogram(
 
 
 def energy_envelope(samples: np.ndarray, sr: float, target_sr: float = 400.0, window_ms: float = 25.0) -> np.ndarray:
-    """Compute energy envelope and downsample to target_sr."""
+    """Compute energy envelope and downsample to target_sr (vectorized)."""
+    x = np.asarray(samples, dtype=np.float64)
+    if x.size == 0:
+        return np.zeros(0, dtype=np.float64)
     window_samples = max(1, int(round(window_ms * sr / 1000.0)))
     hop_samples = max(1, int(round(sr / target_sr)))
     half = window_samples // 2
-    pad = np.pad(np.abs(samples), (half, half), mode="constant")
-    n_frames = (len(samples) + hop_samples - 1) // hop_samples
-    envelope = np.empty(n_frames, dtype=np.float64)
-    for i in range(n_frames):
-        start = i * hop_samples
-        end = start + window_samples
-        # window must fit; clip if not.
-        if end > len(pad):
-            end = len(pad)
-        if start >= end:
-            envelope[i] = 0.0
-        else:
-            envelope[i] = np.mean(pad[start:end] ** 2)
-    return np.sqrt(envelope + 1e-12)
+    pad = np.pad(x ** 2, (half, half), mode="constant", constant_values=0.0)
+    cum = np.cumsum(pad, dtype=np.float64)
+    max_start = len(x) - 1
+    starts = np.arange(0, len(x), hop_samples)
+    starts = starts[starts <= max_start]
+    ends = starts + window_samples
+    ends = np.minimum(ends, len(cum))
+    counts = ends - starts
+    counts = np.where(counts > 0, counts, 1)
+    power = (cum[ends] - cum[starts]) / counts
+    return np.sqrt(power + 1e-12)
