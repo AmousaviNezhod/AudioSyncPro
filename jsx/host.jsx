@@ -93,6 +93,16 @@ var host = host || {};
         return 0;
     }
 
+    function getTrackEndSeconds(track) {
+        try {
+            if (track.clips && track.clips.numItems > 0) {
+                var last = track.clips[track.clips.numItems - 1];
+                return parseFloat(last.end.seconds);
+            }
+        } catch (e) {}
+        return 0.0;
+    }
+
     /**
      * Collect selected TrackItems by walking every video/audio track and
      * checking isSelected(). Linked video+audio instances (e.g. from an MP4)
@@ -399,7 +409,6 @@ var host = host || {};
 
     function moveClip(seq, op) {
         try {
-            // Prefer the exact clip object captured during getSelectedClips.
             var item = getStoredClip(op);
             var clip = null, isAudio = false, origTrackIndex = -1, origClipIndex = -1;
             if (item && item.clip) {
@@ -415,102 +424,114 @@ var host = host || {};
                 origClipIndex = op.clipIndex;
             }
 
-            var tracks = isAudio ? seq.audioTracks : seq.videoTracks;
-            var targetTrackIndex = (op.newTrackIndex !== undefined) ? op.newTrackIndex : origTrackIndex;
+            var targetVTrack = (op.newTrackIndex !== undefined) ? op.newTrackIndex : origTrackIndex;
+            var targetATrack = targetVTrack;
             var projectItem = null;
             try { projectItem = clip.projectItem; } catch (e) {}
+            if (!projectItem) return { success: false, error: "Clip has no project item; cannot move" };
 
-            // Distribute to a different track by inserting on the target track and removing the original.
-            if (targetTrackIndex !== origTrackIndex) {
-                if (targetTrackIndex < 0 || targetTrackIndex >= tracks.numTracks) {
-                    return { success: false, error: "Target track index out of range: " + targetTrackIndex };
-                }
-                if (!projectItem) return { success: false, error: "Clip has no project item; cannot change track" };
+            if (targetVTrack < 0 || targetVTrack >= seq.videoTracks.numTracks) {
+                return { success: false, error: "Target video track index out of range: " + targetVTrack };
+            }
+            if (targetATrack < 0 || targetATrack >= seq.audioTracks.numTracks) {
+                return { success: false, error: "Target audio track index out of range: " + targetATrack };
+            }
 
-                var targetTrack = tracks[targetTrackIndex];
-
-                // Preserve the source in/out points so insertClip uses the same trimmed segment.
-                var origIn = null, origOut = null, clipIn = null, clipOut = null;
-                try {
-                    clipIn = clip.inPoint;
-                    clipOut = clip.outPoint;
-                    origIn = projectItem.getInPoint(4);
-                    origOut = projectItem.getOutPoint(4);
-                    if (clipIn && clipIn.ticks) projectItem.setInPoint(clipIn.ticks, 4);
-                    if (clipOut && clipOut.ticks) projectItem.setOutPoint(clipOut.ticks, 4);
-                } catch (e) {}
-
-                var ticks = String(Math.round(op.newStartSeconds * 254016000000));
-                var insertedClip = null;
-                try {
-                    insertedClip = targetTrack.insertClip(projectItem, ticks, 0, 0);
-                } catch (e1) {
-                    try {
-                        var tObj = new Time();
-                        tObj.seconds = op.newStartSeconds;
-                        insertedClip = targetTrack.insertClip(projectItem, tObj, 0, 0);
-                    } catch (e2) {
-                        return { success: false, error: "Could not insert clip to track " + targetTrackIndex + ": " + e2.toString() };
-                    }
-                }
-
-                if (origIn !== null || origOut !== null) {
-                    try {
-                        if (origIn !== null) projectItem.setInPoint(origIn, 4);
-                        if (origOut !== null) projectItem.setOutPoint(origOut, 4);
-                    } catch (e) {}
-                }
-
-                if (insertedClip && op.gainDb) {
-                    setClipGainOnClip(insertedClip, op.gainDb);
-                } else if (op.gainDb) {
-                    var fallbackClip = findClipByProjectAndStart(targetTrack, projectItem, op.newStartSeconds);
-                    if (fallbackClip) setClipGainOnClip(fallbackClip, op.gainDb);
-                }
-
-                // Remove original audio counterpart first (before video remove may unlink it).
-                var origAudio = null;
-                try { origAudio = findLinkedAudioClip(seq, op); } catch (e) {}
-
-                var removeErrors = [];
-                try {
-                    var res = clip.remove(false, false);
-                    if (res !== 0) removeErrors.push("video remove returned " + res);
-                } catch (e) {
-                    removeErrors.push("video remove: " + e.toString());
-                }
-
-                if (origAudio) {
-                    try { origAudio.remove(false, false); } catch (e) { removeErrors.push("audio remove: " + e.toString()); }
-                }
-
-                // If the original still exists, report an error.
-                try {
-                    if (findClipByIndex(seq, origTrackIndex, origClipIndex, isAudio) === clip) {
-                        return { success: false, error: "Original clip still on timeline after move. " + removeErrors.join("; ") };
-                    }
-                } catch (e) {}
-
+            var currentStart = getClipStartSeconds(clip);
+            if (origTrackIndex === targetVTrack && Math.abs(currentStart - op.newStartSeconds) < 0.0001 && !op.gainDb) {
                 return { success: true };
             }
 
-            // Same-track time shift: clip.move expects a relative offset in seconds.
-            var currentStart = getClipStartSeconds(clip);
-            var delta = op.newStartSeconds - currentStart;
-            if (Math.abs(delta) > 0.0001) {
-                var moveTime = new Time();
-                moveTime.seconds = delta;
+            // Preserve the source in/out points so the re-inserted segment keeps its trim.
+            var origIn = null, origOut = null, clipIn = null, clipOut = null;
+            try {
+                clipIn = clip.inPoint;
+                clipOut = clip.outPoint;
+                origIn = projectItem.getInPoint(4);
+                origOut = projectItem.getOutPoint(4);
+                if (clipIn && clipIn.ticks) projectItem.setInPoint(clipIn.ticks, 4);
+                if (clipOut && clipOut.ticks) projectItem.setOutPoint(clipOut.ticks, 4);
+            } catch (e) {}
+
+            // Find original audio before any modifications.
+            var origAudio = null;
+            try { if (!isAudio) origAudio = findLinkedAudioClip(seq, op); } catch (e) {}
+
+            var vTrack = seq.videoTracks[targetVTrack];
+            var aTrack = seq.audioTracks[targetATrack];
+
+            // Use a "safe insert" at the end of the target tracks, then move to the
+            // final time. This avoids the ripple/overwrite bugs that occur when
+            // inserting directly onto a track that already contains clips.
+            var safeV = getTrackEndSeconds(vTrack);
+            var safeA = getTrackEndSeconds(aTrack);
+            var safeTime = Math.max(safeV, safeA);
+            var safeTimeObj = new Time();
+            safeTimeObj.seconds = safeTime;
+
+            var newVClip = null;
+            var newAClip = null;
+            var usedSafeInsert = false;
+
+            try {
+                seq.insertClip(projectItem, safeTimeObj, targetVTrack, targetATrack);
+                usedSafeInsert = true;
+                if (vTrack.clips && vTrack.clips.numItems > 0) newVClip = vTrack.clips[vTrack.clips.numItems - 1];
+                if (aTrack.clips && aTrack.clips.numItems > 0) newAClip = aTrack.clips[aTrack.clips.numItems - 1];
+            } catch (e1) {
+                // Fallback: direct overwrite at target time.
                 try {
-                    clip.move(moveTime);
-                } catch (e) {
-                    return { success: false, error: "clip.move failed: " + e.toString() };
+                    var targetTimeObj = new Time();
+                    targetTimeObj.seconds = op.newStartSeconds;
+                    seq.overwriteClip(projectItem, targetTimeObj, targetVTrack, targetATrack);
+                    newVClip = findClipByProjectAndStart(vTrack, projectItem, op.newStartSeconds);
+                    if (!isAudio) newAClip = findClipByProjectAndStart(aTrack, projectItem, op.newStartSeconds);
+                } catch (e2) {
+                    return { success: false, error: "Could not insert/overwrite clip on target tracks: " + e2.toString() };
                 }
             }
 
-            if (op.gainDb) {
-                var gainClip = isAudio ? clip : (findLinkedAudioClip(seq, op) || clip);
-                setClipGainOnClip(gainClip, op.gainDb);
+            // Remove originals (TrackItem.remove only removes one track item).
+            try { clip.remove(false, false); } catch (e) {}
+            if (origAudio) {
+                try { origAudio.remove(false, false); } catch (e) {}
             }
+
+            // If we used safe-insert, shift the new clips to their final time.
+            if (usedSafeInsert) {
+                var delta = op.newStartSeconds - safeTime;
+                if (Math.abs(delta) > 0.0001) {
+                    var deltaTime = new Time();
+                    deltaTime.seconds = delta;
+                    if (newVClip) {
+                        try { newVClip.move(deltaTime); } catch (e) {}
+                    }
+                    if (newAClip) {
+                        // Avoid double-moving if the video move already dragged linked audio.
+                        var expectedA = safeTime + delta;
+                        var currentA = getClipStartSeconds(newAClip);
+                        if (Math.abs(currentA - expectedA) > 0.001) {
+                            try { newAClip.move(deltaTime); } catch (e) {}
+                        }
+                    }
+                }
+            }
+
+            // Restore projectItem in/out points.
+            try {
+                if (origIn !== null || origOut !== null) {
+                    if (origIn !== null) projectItem.setInPoint(origIn, 4);
+                    if (origOut !== null) projectItem.setOutPoint(origOut, 4);
+                }
+            } catch (e) {}
+
+            // Apply gain to the new audio track item.
+            if (op.gainDb) {
+                var gainClip = newAClip || (isAudio ? clip : null);
+                if (!gainClip && !isAudio) gainClip = findClipByProjectAndStart(aTrack, projectItem, op.newStartSeconds);
+                if (gainClip) setClipGainOnClip(gainClip, op.gainDb);
+            }
+
             return { success: true };
         } catch (e) {
             return { success: false, error: "moveClip exception: " + e.toString() };

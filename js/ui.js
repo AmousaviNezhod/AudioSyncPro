@@ -5,9 +5,9 @@ var AudioSyncProUI = (function () {
     var els = {};
 
     var SYNC_PRESETS = {
-        fast: { sampleRate: 8000, sampleSeconds: 10, maxOffset: 5.0, matchThreshold: 0.35, hint: "۸kHz · ۱۰s · آستانه ۰.۳۵ — پیش‌نمایش سریع" },
-        balanced: { sampleRate: 16000, sampleSeconds: 30, maxOffset: 10.0, matchThreshold: 0.45, hint: "۱۶kHz · ۳۰s · آستانه ۰.۴۵ — تعادل سرعت و دقت" },
-        accurate: { sampleRate: 22050, sampleSeconds: 60, maxOffset: 20.0, matchThreshold: 0.55, hint: "۲۲.۰۵kHz · ۶۰s · آستانه ۰.۵۵ — بیشترین دقت" },
+        fast: { sampleRate: 8000, sampleSeconds: 20, maxOffset: 10.0, matchThreshold: 0.35, hint: "۸kHz · ۲۰s · آستانه ۰.۳۵ — پیش‌نمایش سریع" },
+        balanced: { sampleRate: 16000, sampleSeconds: 40, maxOffset: 30.0, matchThreshold: 0.40, hint: "۱۶kHz · ۴۰s · آستانه ۰.۴۰ — تعادل سرعت و دقت" },
+        accurate: { sampleRate: 22050, sampleSeconds: 80, maxOffset: 60.0, matchThreshold: 0.45, hint: "۲۲.۰۵kHz · ۸۰s · آستانه ۰.۴۵ — بیشترین دقت" },
         custom: null
     };
 
@@ -109,12 +109,12 @@ var AudioSyncProUI = (function () {
         var e = getEls();
         return {
             sampleRate: parseInt(e.sampleRate.value, 10) || 16000,
-            sampleSeconds: parseFloat(e.sampleSeconds.value) || 30,
+            sampleSeconds: parseFloat(e.sampleSeconds.value) || 40,
             placeOnTracks: e.placeOnTracks.checked,
             normalizeAudio: false,
-            matchThreshold: parseFloat(e.matchThreshold.value) || 0.45,
+            matchThreshold: parseFloat(e.matchThreshold.value) || 0.40,
             targetPeak: parseFloat(e.targetPeak.value) || -1.0,
-            maxOffset: parseFloat(e.maxOffset.value) || 10.0
+            maxOffset: parseFloat(e.maxOffset.value) || 30.0
         };
     }
 

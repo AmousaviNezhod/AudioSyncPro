@@ -99,11 +99,11 @@ class SyncSettings:
         }
         preset = preset_map.get(str(preset_in).lower(), str(preset_in).lower())
 
-        # Preset defaults.
+        # Preset defaults aligned with the UI presets.
         preset_defaults = {
-            "fast": {"sample_rate": 8000, "coarse_sample_rate": 2000, "max_analyze_seconds": 20.0, "fine_search_seconds": 1.0, "match_threshold": 0.35, "min_peak_ratio": 1.3},
-            "balanced": {"sample_rate": 16000, "coarse_sample_rate": 4000, "max_analyze_seconds": 60.0, "fine_search_seconds": 2.0, "match_threshold": 0.45, "min_peak_ratio": 1.3},
-            "accurate": {"sample_rate": 22050, "coarse_sample_rate": 8000, "max_analyze_seconds": 120.0, "fine_search_seconds": 3.0, "match_threshold": 0.5, "min_peak_ratio": 1.4},
+            "fast": {"sample_rate": 8000, "coarse_sample_rate": 2000, "max_analyze_seconds": 20.0, "max_offset_seconds": 10.0, "fine_search_seconds": 1.0, "match_threshold": 0.35, "min_peak_ratio": 1.3},
+            "balanced": {"sample_rate": 16000, "coarse_sample_rate": 4000, "max_analyze_seconds": 40.0, "max_offset_seconds": 30.0, "fine_search_seconds": 2.0, "match_threshold": 0.40, "min_peak_ratio": 1.3},
+            "accurate": {"sample_rate": 22050, "coarse_sample_rate": 8000, "max_analyze_seconds": 80.0, "max_offset_seconds": 60.0, "fine_search_seconds": 3.0, "match_threshold": 0.45, "min_peak_ratio": 1.4},
             "custom": {},
         }
         defaults = preset_defaults.get(preset, preset_defaults["balanced"])
@@ -112,8 +112,8 @@ class SyncSettings:
             preset=preset,
             sample_rate=_get("sampleRate", "sample_rate", default=defaults.get("sample_rate", 16000), coerce=int),
             coarse_sample_rate=_get("coarseSampleRate", "coarse_sample_rate", default=defaults.get("coarse_sample_rate", 4000), coerce=int),
-            max_analyze_seconds=_get("sampleSeconds", "maxAnalyzeSeconds", "max_analyze_seconds", default=defaults.get("max_analyze_seconds", 60.0), coerce=float),
-            max_offset_seconds=_get("maxOffset", "max_offset_seconds", default=30.0, coerce=float),
+            max_analyze_seconds=_get("sampleSeconds", "maxAnalyzeSeconds", "max_analyze_seconds", default=defaults.get("max_analyze_seconds", 40.0), coerce=float),
+            max_offset_seconds=_get("maxOffset", "max_offset_seconds", default=defaults.get("max_offset_seconds", 30.0), coerce=float),
             fine_search_seconds=_get("fineSearchSeconds", "fine_search_seconds", default=defaults.get("fine_search_seconds", 2.0), coerce=float),
             match_threshold=_get("matchThreshold", "match_threshold", default=defaults.get("match_threshold", 0.45), coerce=float),
             min_peak_ratio=_get("minPeakRatio", "min_peak_ratio", default=defaults.get("min_peak_ratio", 1.3), coerce=float),
