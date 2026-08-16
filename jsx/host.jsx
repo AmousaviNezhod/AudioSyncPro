@@ -95,11 +95,11 @@ var host = host || {};
 
     /**
      * Collect selected TrackItems by walking every video/audio track and
-     * checking isSelected(). This directly yields the correct track and index,
-     * avoiding object-identity issues with seq.getSelection().
+     * checking isSelected(). Linked video+audio instances (e.g. from an MP4)
+     * are collapsed into a single primary item, preferring the video track item.
      */
     function getSelectedTrackItems(seq) {
-        var items = [];
+        var raw = [];
         var ti, ci, track, c;
 
         // Video tracks
@@ -110,7 +110,7 @@ var host = host || {};
                     c = track.clips[ci];
                     try {
                         if (c.isSelected && c.isSelected()) {
-                            items.push({ clip: c, trackIndex: ti, clipIndex: ci, isAudio: false });
+                            raw.push({ clip: c, trackIndex: ti, clipIndex: ci, isAudio: false });
                         }
                     } catch (e2) {}
                 }
@@ -125,7 +125,7 @@ var host = host || {};
                     c = track.clips[ci];
                     try {
                         if (c.isSelected && c.isSelected()) {
-                            items.push({ clip: c, trackIndex: ti, clipIndex: ci, isAudio: true });
+                            raw.push({ clip: c, trackIndex: ti, clipIndex: ci, isAudio: true });
                         }
                     } catch (e2) {}
                 }
@@ -133,7 +133,7 @@ var host = host || {};
         }
 
         // Fallback if isSelected is not available: try seq.getSelection().
-        if (items.length === 0 && seq.getSelection) {
+        if (raw.length === 0 && seq.getSelection) {
             try {
                 var sel = seq.getSelection();
                 if (sel) {
@@ -145,11 +145,32 @@ var host = host || {};
                         if (!clip) continue;
                         var info = findTrackAndClipIndex(seq, clip);
                         if (info) {
-                            items.push({ clip: clip, trackIndex: info.trackIndex, clipIndex: info.clipIndex, isAudio: info.isAudio });
+                            raw.push({ clip: clip, trackIndex: info.trackIndex, clipIndex: info.clipIndex, isAudio: info.isAudio });
                         }
                     }
                 }
             } catch (e) {}
+        }
+
+        // Deduplicate linked video/audio pairs by source+in/out+start. Keep video as primary.
+        var seen = {};
+        var seenIdx = {};
+        var items = [];
+        for (var i = 0; i < raw.length; i++) {
+            var item = raw[i];
+            if (!item || !item.clip) continue;
+            var sig = getClipSignature(item.clip);
+            var key = sig.name + "|" + sig.start.toFixed(3) + "|" + sig.inPoint.toFixed(3) + "|" + sig.outPoint.toFixed(3);
+            if (seen[key]) {
+                if (!item.isAudio && seen[key].isAudio) {
+                    seen[key] = item;
+                    items[seenIdx[key]] = item;
+                }
+            } else {
+                seen[key] = item;
+                seenIdx[key] = items.length;
+                items.push(item);
+            }
         }
 
         return items;
@@ -399,7 +420,7 @@ var host = host || {};
             var projectItem = null;
             try { projectItem = clip.projectItem; } catch (e) {}
 
-            // Distribute to a different track by removing the original and overwriting on the target track.
+            // Distribute to a different track by inserting on the target track and removing the original.
             if (targetTrackIndex !== origTrackIndex) {
                 if (targetTrackIndex < 0 || targetTrackIndex >= tracks.numTracks) {
                     return { success: false, error: "Target track index out of range: " + targetTrackIndex };
@@ -408,7 +429,7 @@ var host = host || {};
 
                 var targetTrack = tracks[targetTrackIndex];
 
-                // Preserve the source in/out points so overwriteClip inserts the same trimmed segment.
+                // Preserve the source in/out points so insertClip uses the same trimmed segment.
                 var origIn = null, origOut = null, clipIn = null, clipOut = null;
                 try {
                     clipIn = clip.inPoint;
@@ -419,17 +440,15 @@ var host = host || {};
                     if (clipOut && clipOut.ticks) projectItem.setOutPoint(clipOut.ticks, 4);
                 } catch (e) {}
 
-                var insertTime = new Time();
-                insertTime.seconds = op.newStartSeconds;
-                var inserted = false;
+                var ticks = String(Math.round(op.newStartSeconds * 254016000000));
+                var insertedClip = null;
                 try {
-                    targetTrack.overwriteClip(projectItem, insertTime);
-                    inserted = true;
-                } catch (e) {
+                    insertedClip = targetTrack.insertClip(projectItem, ticks, 0, 0);
+                } catch (e1) {
                     try {
-                        insertTime.ticks = String(Math.round(op.newStartSeconds * 254016000000));
-                        targetTrack.overwriteClip(projectItem, insertTime);
-                        inserted = true;
+                        var tObj = new Time();
+                        tObj.seconds = op.newStartSeconds;
+                        insertedClip = targetTrack.insertClip(projectItem, tObj, 0, 0);
                     } catch (e2) {
                         return { success: false, error: "Could not insert clip to track " + targetTrackIndex + ": " + e2.toString() };
                     }
@@ -442,18 +461,36 @@ var host = host || {};
                     } catch (e) {}
                 }
 
-                if (inserted) {
-                    var newClip = findClipByProjectAndStart(targetTrack, projectItem, op.newStartSeconds);
-                    if (op.gainDb && newClip) {
-                        setClipGainOnClip(newClip, op.gainDb);
-                    }
-
-                    try {
-                        clip.remove(false, false);
-                    } catch (e) {
-                        return { success: false, error: "Inserted on new track but could not remove original: " + e.toString() };
-                    }
+                if (insertedClip && op.gainDb) {
+                    setClipGainOnClip(insertedClip, op.gainDb);
+                } else if (op.gainDb) {
+                    var fallbackClip = findClipByProjectAndStart(targetTrack, projectItem, op.newStartSeconds);
+                    if (fallbackClip) setClipGainOnClip(fallbackClip, op.gainDb);
                 }
+
+                // Remove original audio counterpart first (before video remove may unlink it).
+                var origAudio = null;
+                try { origAudio = findLinkedAudioClip(seq, op); } catch (e) {}
+
+                var removeErrors = [];
+                try {
+                    var res = clip.remove(false, false);
+                    if (res !== 0) removeErrors.push("video remove returned " + res);
+                } catch (e) {
+                    removeErrors.push("video remove: " + e.toString());
+                }
+
+                if (origAudio) {
+                    try { origAudio.remove(false, false); } catch (e) { removeErrors.push("audio remove: " + e.toString()); }
+                }
+
+                // If the original still exists, report an error.
+                try {
+                    if (findClipByIndex(seq, origTrackIndex, origClipIndex, isAudio) === clip) {
+                        return { success: false, error: "Original clip still on timeline after move. " + removeErrors.join("; ") };
+                    }
+                } catch (e) {}
+
                 return { success: true };
             }
 

@@ -106,5 +106,7 @@ def build_plan(
             "gainDb": gain_db,
         })
         cursor += dur
+        if place_on_tracks:
+            leftover_track += 1
 
     return operations
