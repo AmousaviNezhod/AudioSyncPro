@@ -57,6 +57,13 @@ def compute_confidence(
     z_c = max(0.0, min(1.0, (z_score - 3.0) / 7.0))
     ov_c = float(max(0.0, min(1.0, overlap)))
 
+    # A very high Pearson correlation is the strongest indicator of a true match.
+    # If the signals are clearly aligned, do not let a broad (low peak_ratio) or
+    # marginally low z_score dominate the confidence.
+    if pearson_c >= 0.8:
+        pr_c = max(pr_c, pearson_c - 0.05)
+        z_c = max(z_c, pearson_c - 0.05)
+
     confidence = 0.35 * pearson_c + 0.25 * pr_c + 0.25 * z_c + 0.15 * ov_c
     return confidence, {
         "pearson": pearson_c,
@@ -73,7 +80,12 @@ def is_match_accepted(
     z_score: float,
     overlap: float,
     thresholds: Dict[str, float],
+    pearson: float = 0.0,
 ) -> bool:
+    # A very high Pearson correlation with any meaningful overlap is a true match,
+    # even if the peak is broad (common for long continuous audio).
+    if pearson >= 0.8 and overlap >= thresholds.get("min_overlap_ratio", 0.0):
+        return True
     if confidence < thresholds.get("match_threshold", 0.45):
         return False
     if peak_ratio < thresholds.get("min_peak_ratio", 1.005):

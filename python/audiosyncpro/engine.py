@@ -82,6 +82,11 @@ def _pairwise_sync(
         except Exception:
             mel_res = None
 
+    # Timeline positions are often a good coarse prior (e.g. time-of-day).
+    timeline_offset = float(target.start_seconds - ref.start_seconds)
+    if abs(timeline_offset) <= max_offset:
+        coarse_candidates.append((timeline_offset, "timeline", 0.5))
+
     if not coarse_candidates:
         coarse_candidates = [(0.0, "gcc_phat", 0.0)]
 
@@ -174,6 +179,7 @@ def _pairwise_sync(
             "min_z_score": settings.min_z_score,
             "min_overlap_ratio": settings.min_overlap_ratio,
         },
+        pearson=chosen_fine_res["correlation"],
     )
 
     processing_time_ms = (time.perf_counter() - start) * 1000.0
@@ -376,6 +382,10 @@ def process_sync_request(request: dict) -> dict:
             "confidence": r.confidence,
             "method": r.method,
             "accepted": r.diagnostics.get("accepted", False),
+            "pearson": r.pearson,
+            "peakRatio": r.peak_ratio,
+            "zScore": r.z_score,
+            "overlapRatio": r.overlap_ratio,
         })
 
     diagnostics = {

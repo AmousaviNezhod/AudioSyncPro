@@ -184,7 +184,7 @@ var host = host || {};
             var item = raw[i];
             if (!item || !item.clip) continue;
             var sig = getClipSignature(item.clip);
-            var key = sig.mediaPath + "|" + sig.start.toFixed(3) + "|" + sig.inPoint.toFixed(3) + "|" + sig.outPoint.toFixed(3);
+            var key = (sig.mediaPath || sig.name) + "|" + sig.start.toFixed(3) + "|" + sig.inPoint.toFixed(3) + "|" + sig.outPoint.toFixed(3) + "|" + (sig.nodeId || "");
             if (seen[key]) {
                 if (!item.isAudio && seen[key].isAudio) {
                     seen[key] = item;
