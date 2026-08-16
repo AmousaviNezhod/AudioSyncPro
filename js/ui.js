@@ -1,18 +1,18 @@
 /**
- * Audio Sync Pro - UI utilities
+ * Audio Sync Pro - UI controller
  */
 var AudioSyncProUI = (function () {
     var els = {};
 
-    var PRESETS = {
-        fast: { sampleRate: 8000, sampleSeconds: 10, maxOffset: 5.0, matchThreshold: 0.35, hint: "نرخ نمونه ۸kHz، ۱۰ ثانیه، آستانه ۰.۳۵ — برای پیش‌نمایش سریع" },
-        balanced: { sampleRate: 16000, sampleSeconds: 30, maxOffset: 10.0, matchThreshold: 0.45, hint: "نرخ نمونه ۱۶kHz، ۳۰ ثانیه، آستانه ۰.۴۵ — بهترین تعادل" },
-        accurate: { sampleRate: 22050, sampleSeconds: 60, maxOffset: 20.0, matchThreshold: 0.55, hint: "نرخ نمونه ۲۲.۰۵kHz، ۶۰ ثانیه، آستانه ۰.۵۵ — بیشترین دقت" },
+    var SYNC_PRESETS = {
+        fast: { sampleRate: 8000, sampleSeconds: 10, maxOffset: 5.0, matchThreshold: 0.35, hint: "۸kHz · ۱۰s · آستانه ۰.۳۵ — پیش‌نمایش سریع" },
+        balanced: { sampleRate: 16000, sampleSeconds: 30, maxOffset: 10.0, matchThreshold: 0.45, hint: "۱۶kHz · ۳۰s · آستانه ۰.۴۵ — تعادل سرعت و دقت" },
+        accurate: { sampleRate: 22050, sampleSeconds: 60, maxOffset: 20.0, matchThreshold: 0.55, hint: "۲۲.۰۵kHz · ۶۰s · آستانه ۰.۵۵ — بیشترین دقت" },
         custom: null
     };
 
     function getEls() {
-        if (!els.analyzeBtn) {
+        if (!els.syncBtn) {
             els = {
                 preset: document.getElementById("preset"),
                 presetHint: document.getElementById("presetHint"),
@@ -22,17 +22,19 @@ var AudioSyncProUI = (function () {
                 maxOffset: document.getElementById("maxOffset"),
                 matchThreshold: document.getElementById("matchThreshold"),
                 placeOnTracks: document.getElementById("placeOnTracks"),
-                normalizeAudio: document.getElementById("normalizeAudio"),
                 targetPeak: document.getElementById("targetPeak"),
-                analyzeBtn: document.getElementById("analyzeBtn"),
-                normalizeOnlyBtn: document.getElementById("normalizeOnlyBtn"),
+                normMode: document.getElementById("normMode"),
+                syncBtn: document.getElementById("syncBtn"),
+                normalizeBtn: document.getElementById("normalizeBtn"),
                 progressPanel: document.getElementById("progressPanel"),
                 progressLabel: document.getElementById("progressLabel"),
                 progressPercent: document.getElementById("progressPercent"),
                 progressFill: document.getElementById("progressFill"),
                 logOutput: document.getElementById("logOutput"),
-                status: document.getElementById("status"),
-                statusDot: document.getElementById("statusDot")
+                statusChip: document.getElementById("statusChip"),
+                statusDot: document.getElementById("statusDot"),
+                statusLabel: document.getElementById("statusLabel"),
+                footerStatus: document.getElementById("footerStatus")
             };
         }
         return els;
@@ -58,6 +60,27 @@ var AudioSyncProUI = (function () {
         else if (state === "error") e.statusDot.classList.add("error");
     }
 
+    function setStatus(message, type) {
+        var e = getEls();
+        e.footerStatus.textContent = message;
+        e.footerStatus.className = "footer-status " + (type || "");
+        e.statusLabel.textContent = message;
+
+        if (type === "error") {
+            setDot("error");
+            e.statusChip.style.borderColor = "rgba(255, 90, 101, 0.35)";
+        } else if (type === "success") {
+            setDot("ready");
+            e.statusChip.style.borderColor = "rgba(0, 212, 170, 0.35)";
+        } else if (type === "warn") {
+            setDot("");
+            e.statusChip.style.borderColor = "rgba(240, 198, 116, 0.35)";
+        } else {
+            setDot("");
+            e.statusChip.style.borderColor = "";
+        }
+    }
+
     function log(message, type) {
         var e = getEls();
         type = type || "info";
@@ -66,14 +89,6 @@ var AudioSyncProUI = (function () {
         entry.textContent = "[" + new Date().toLocaleTimeString("fa-IR") + "] " + message;
         e.logOutput.appendChild(entry);
         e.logOutput.scrollTop = e.logOutput.scrollHeight;
-    }
-
-    function setStatus(message, type) {
-        var e = getEls();
-        e.status.textContent = message;
-        e.status.className = "status " + (type || "");
-        if (type === "error") setDot("error");
-        else if (type === "success") setDot("ready");
     }
 
     function setProgress(percent, label) {
@@ -90,29 +105,47 @@ var AudioSyncProUI = (function () {
         e.progressPanel.style.display = "none";
     }
 
-    function getSettings() {
+    function getSyncSettings() {
         var e = getEls();
         return {
             sampleRate: parseInt(e.sampleRate.value, 10) || 16000,
             sampleSeconds: parseFloat(e.sampleSeconds.value) || 30,
             placeOnTracks: e.placeOnTracks.checked,
-            normalizeAudio: e.normalizeAudio.checked,
+            normalizeAudio: false,
             matchThreshold: parseFloat(e.matchThreshold.value) || 0.45,
             targetPeak: parseFloat(e.targetPeak.value) || -1.0,
             maxOffset: parseFloat(e.maxOffset.value) || 10.0
         };
     }
 
+    function getNormalizeSettings() {
+        var e = getEls();
+        return {
+            sampleRate: 16000,
+            sampleSeconds: 60,
+            placeOnTracks: false,
+            normalizeAudio: true,
+            matchThreshold: 0.45,
+            targetPeak: parseFloat(e.targetPeak.value) || -1.0,
+            maxOffset: 10.0,
+            normMode: e.normMode ? e.normMode.value : "peak"
+        };
+    }
+
+    function getSettings() {
+        return getSyncSettings();
+    }
+
     function setBusy(busy) {
         var e = getEls();
-        e.analyzeBtn.disabled = busy;
-        e.normalizeOnlyBtn.disabled = busy;
+        e.syncBtn.disabled = busy;
+        e.normalizeBtn.disabled = busy;
     }
 
     function applyPreset() {
         var e = getEls();
         var name = e.preset ? e.preset.value : "balanced";
-        var cfg = PRESETS[name] || PRESETS["balanced"];
+        var cfg = SYNC_PRESETS[name] || SYNC_PRESETS["balanced"];
         var custom = name === "custom";
 
         if (custom) {
@@ -147,11 +180,11 @@ var AudioSyncProUI = (function () {
             e.preset.addEventListener("change", applyPreset);
             applyPreset();
         }
-        e.analyzeBtn.addEventListener("click", function () {
-            if (handlers.onSync) handlers.onSync(getSettings());
+        e.syncBtn.addEventListener("click", function () {
+            if (handlers.onSync) handlers.onSync(getSyncSettings());
         });
-        e.normalizeOnlyBtn.addEventListener("click", function () {
-            if (handlers.onNormalize) handlers.onNormalize(getSettings());
+        e.normalizeBtn.addEventListener("click", function () {
+            if (handlers.onNormalize) handlers.onNormalize(getNormalizeSettings());
         });
     }
 
@@ -162,6 +195,8 @@ var AudioSyncProUI = (function () {
         setProgress: setProgress,
         hideProgress: hideProgress,
         getSettings: getSettings,
+        getSyncSettings: getSyncSettings,
+        getNormalizeSettings: getNormalizeSettings,
         setBusy: setBusy,
         setDot: setDot
     };

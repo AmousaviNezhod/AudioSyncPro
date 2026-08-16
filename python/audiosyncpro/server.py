@@ -8,7 +8,7 @@ from typing import Any, Dict
 
 import os
 
-from .engine import process_sync_request
+from .engine import process_normalize_request, process_sync_request
 
 
 def _notify_startup() -> None:
@@ -59,8 +59,7 @@ def run_server() -> int:
                 elif action == "ping":
                     result = {"success": True, "pong": True, "time": time.time()}
                 elif action == "normalize":
-                    # Normalization is now integrated into sync; return no-op.
-                    result = {"success": True, "operations": []}
+                    result = process_normalize_request(request)
                 else:
                     result = {"success": False, "error": f"Unknown action: {action}"}
                 if request_id is not None:

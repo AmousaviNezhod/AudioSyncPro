@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -94,106 +95,113 @@ def run_ffmpeg(
         return -1, b"", str(e).encode("utf-8")
 
 
-def run_ffprobe(ffmpeg_path: str, media_path: str, timeout: float = 60.0) -> dict:
-    """Run ffprobe from the same directory as ffmpeg and return JSON."""
-    # Try ffprobe next to ffmpeg executable first, then PATH.
-    candidates = []
-    if os.path.isfile(ffmpeg_path):
-        dir_name = os.path.dirname(ffmpeg_path)
-        candidates.append(os.path.join(dir_name, "ffprobe.exe"))
-        candidates.append(os.path.join(dir_name, "ffprobe"))
-    candidates.append("ffprobe")
-
-    ffprobe_path = None
-    for c in candidates:
-        if shutil.which(c) or os.path.isfile(c):
-            ffprobe_path = c
-            break
-    if not ffprobe_path:
-        raise RuntimeError("ffprobe not found")
-
-    cmd = [
-        ffprobe_path,
-        "-v",
-        "error",
-        "-print_format",
-        "json",
-        "-show_format",
-        "-show_streams",
-        media_path,
-    ]
-    startupinfo = _startupinfo()
-    creationflags = _creationflags()
-    result = subprocess.run(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        stdin=subprocess.DEVNULL,
-        timeout=timeout,
-        startupinfo=startupinfo,
-        creationflags=creationflags,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.decode("utf-8", "ignore")[:500])
-    return json.loads(result.stdout.decode("utf-8"))
+_FFMPEG_CHANNEL_COUNTS = {
+    "mono": 1,
+    "stereo": 2,
+    "2.1": 3,
+    "3.0": 3,
+    "3.0(back)": 3,
+    "4.0": 4,
+    "quad": 4,
+    "5.0": 5,
+    "5.1": 6,
+    "6.0": 6,
+    "6.1": 7,
+    "7.1": 8,
+    "8.0": 8,
+}
 
 
-def inspect_media(ffmpeg_path: str, media_path: str) -> MediaInfo:
-    info = run_ffprobe(ffmpeg_path, media_path)
-    fmt = info.get("format") or {}
-    streams = info.get("streams") or []
+def _layout_to_channels(layout: str) -> int:
+    return _FFMPEG_CHANNEL_COUNTS.get(layout.strip().lower(), 0)
 
-    duration = 0.0
-    try:
-        duration = float(fmt.get("duration", 0) or 0)
-    except Exception:
-        pass
 
+def _parse_duration(text: str) -> float:
+    """Parse HH:MM:SS.mmm duration from ffmpeg stderr."""
+    m = re.search(r"Duration:\s*(\d+):(\d+):([\d.]+)", text)
+    if not m:
+        return 0.0
+    h, m_, s = m.groups()
+    return int(h) * 3600 + int(m_) * 60 + float(s)
+
+
+def _parse_stream_info(text: str) -> Tuple[int, int, str, bool]:
+    """Return (sample_rate, channels, channel_layout, has_audio) from ffmpeg -i output."""
+    has_audio = bool(re.search(r"Stream\s+#0?:\d+:.*Audio:", text))
     sample_rate = 0
     channels = 0
     channel_layout = ""
-    has_audio = False
-    creation_time = None
 
-    for s in streams:
-        if s.get("codec_type") == "audio":
-            has_audio = True
-            try:
-                sample_rate = int(s.get("sample_rate", 0) or 0)
-            except Exception:
-                pass
-            try:
-                channels = int(s.get("channels", 0) or 0)
-            except Exception:
-                pass
-            channel_layout = s.get("channel_layout") or ""
-            if not creation_time:
-                creation_time = s.get("tags", {}).get("creation_time") or s.get("tags", {}).get("com.apple.quicktime.creationdate")
+    # Look for the first audio stream description line.
+    for line in text.splitlines():
+        if "Audio:" not in line or "Stream #" not in line:
+            continue
+        # Sample rate: e.g. "16000 Hz" or "48 kHz".
+        sr_match = re.search(r"([\d.]+)\s*(Hz|kHz)", line)
+        if sr_match:
+            val = float(sr_match.group(1))
+            unit = sr_match.group(2).lower()
+            sample_rate = int(val * 1000) if unit == "khz" else int(val)
+
+        # Channel layout token like "mono", "stereo", "5.1".
+        layout_match = re.search(r",\s*([\w.()]+)\s*,\s*(s\d+|fltp|s16|s32|float|double)", line)
+        if layout_match:
+            candidate = layout_match.group(1).strip()
+            if _layout_to_channels(candidate):
+                channel_layout = candidate
+                channels = _layout_to_channels(candidate)
+            elif candidate.isdigit():
+                channels = int(candidate)
+        # Fallback: "2 channels" explicit form.
+        if channels == 0:
+            ch_match = re.search(r"(\d+)\s+channels?", line)
+            if ch_match:
+                channels = int(ch_match.group(1))
+        if sample_rate:
             break
 
-    if not creation_time:
-        creation_time = fmt.get("tags", {}).get("creation_time") or fmt.get("tags", {}).get("com.apple.quicktime.creationdate")
+    if channels == 0:
+        channels = 2 if channel_layout and _layout_to_channels(channel_layout) == 2 else 1
+    if not channel_layout:
+        channel_layout = "mono" if channels == 1 else "stereo"
+    return sample_rate, channels, channel_layout, has_audio
 
-    if duration == 0.0 and has_audio:
-        # Fallback: estimate from bit rate if available.
-        try:
-            bit_rate = float(fmt.get("bit_rate", 0) or 0)
-            size = float(fmt.get("size", 0) or 0)
-            if bit_rate > 0 and size > 0:
-                duration = (size * 8) / bit_rate
-        except Exception:
-            pass
+
+def inspect_media(ffmpeg_path: str, media_path: str) -> MediaInfo:
+    """Probe media using ffmpeg -i (no separate ffprobe required)."""
+    args = ["-v", "info", "-nostdin", "-i", media_path, "-t", "0", "-f", "null", "-"]
+    code, _, stderr = run_ffmpeg(ffmpeg_path, args, timeout=60.0)
+    text = stderr.decode("utf-8", "ignore")
+
+    if not re.search(r"Stream\s+#0?:\d+:.*Audio:", text):
+        if code != 0:
+            raise RuntimeError(text[:500])
+        # No audio stream and no error -> treat as audio-less media.
+        return MediaInfo(
+            path=media_path,
+            duration_seconds=0.0,
+            sample_rate=0,
+            channels=0,
+            channel_layout="",
+            has_audio=False,
+            creation_time=None,
+            format_tags={},
+            stream_tags={},
+        )
+
+    duration = _parse_duration(text)
+    sample_rate, channels, channel_layout, has_audio = _parse_stream_info(text)
 
     return MediaInfo(
         path=media_path,
         duration_seconds=duration,
         sample_rate=sample_rate,
         channels=channels,
-        channel_layout=channel_layout or ("mono" if channels == 1 else "stereo"),
+        channel_layout=channel_layout,
         has_audio=has_audio,
-        creation_time=creation_time,
-        format_tags=fmt.get("tags") or {},
-        stream_tags=streams[0].get("tags") if streams else {},
+        creation_time=None,
+        format_tags={},
+        stream_tags={},
     )
 
 
@@ -241,7 +249,7 @@ def extract_audio(
 def detect_volume(ffmpeg_path: str, media_path: str, duration_seconds: Optional[float] = None, timeout: float = 120.0) -> dict:
     """Use volumedetect to obtain mean/max dB."""
     filter_str = "volumedetect"
-    args = ["-v", "error", "-nostdin", "-i", media_path]
+    args = ["-v", "info", "-nostdin", "-i", media_path]
     if duration_seconds and duration_seconds > 0:
         args += ["-t", str(float(duration_seconds))]
     args += ["-af", filter_str, "-f", "null", "-"]

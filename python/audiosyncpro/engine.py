@@ -257,10 +257,13 @@ def process_sync_request(request: dict) -> dict:
 
     # Analyze clips.
     analyzed = []
+    clip_errors = []
     for clip in clips_in:
         try:
             analyzed.append(analyze_clip(clip, ffmpeg_path, settings))
         except Exception as e:
+            import traceback as _tb
+            clip_errors.append(f"{clip.get('name', clip.get('id'))}: {e}\n{_tb.format_exc()}")
             analyzed.append(TimelineClip(
                 id=clip.get("id", 0),
                 name=clip.get("name", ""),
@@ -329,6 +332,9 @@ def process_sync_request(request: dict) -> dict:
         "sampleRate": settings.effective_sample_rate(),
         "maxAnalyzeSeconds": settings.max_analyze_seconds,
         "maxOffsetSeconds": settings.max_offset_seconds,
+        "ffmpegPath": ffmpeg_path,
+        "clipErrors": clip_errors,
+        "samplesPresent": [bool(c.samples is not None and len(c.samples) > 0) for c in analyzed],
         "pairwiseCount": len(pairwise),
         "groupCount": len(groups),
         "orphanCount": len(orphans),
@@ -348,10 +354,41 @@ def process_sync_request(request: dict) -> dict:
 
 
 def process_normalize_request(request: dict) -> dict:
-    """Backward-compatible normalization handler. Gain is now computed during sync."""
-    result = process_sync_request(request)
-    if not result.get("success"):
-        return result
-    gained = sum(1 for op in result.get("operations", []) if op.get("gainDb", 0) != 0)
-    result["gained"] = gained
-    return result
+    """Normalization-only handler: compute per-clip gain and return gain operations only."""
+    start = time.perf_counter()
+    clips_in = request.get("clips", [])
+    settings_dict = request.get("settings", {})
+
+    from .types import SyncSettings
+
+    # Force normalize mode, disable sync-related moves.
+    settings_dict = dict(settings_dict)
+    settings_dict["normalizeAudio"] = True
+    settings_dict["placeOnTracks"] = False
+    settings = SyncSettings.from_dict(settings_dict)
+    ffmpeg_path = resolve_ffmpeg_path(request.get("ffmpegPath", settings.ffmpeg_path))
+
+    operations = []
+    errors = []
+    for clip in clips_in:
+        try:
+            analyzed = analyze_clip(clip, ffmpeg_path, settings)
+        except Exception as e:
+            errors.append(f"{clip.get('name', clip.get('id'))}: {e}")
+            continue
+        if analyzed.gain_db == 0.0:
+            continue
+        operations.append({
+            "type": "gain",
+            "id": analyzed.id,
+            "name": analyzed.name,
+            "gainDb": analyzed.gain_db,
+        })
+
+    return {
+        "success": True,
+        "operations": operations,
+        "gained": len(operations),
+        "errors": errors,
+        "processingTimeMs": (time.perf_counter() - start) * 1000.0,
+    }

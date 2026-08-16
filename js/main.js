@@ -425,7 +425,7 @@
                         AudioSyncProUI.setStatus(res.error || "خطا در اعمال", "error");
                         log(res.error, "error");
                     } else {
-                        AudioSyncProUI.setStatus("سینک و نرمالایز انجام شد", "success");
+                        AudioSyncProUI.setStatus("سینک انجام شد", "success");
                         log("موفق: " + res.data.moved + " حرکت، " + res.data.gained + " نرمالایز", "success");
                         if (res.data.errors && res.data.errors.length) {
                             for (var e = 0; e < res.data.errors.length; e++) {
