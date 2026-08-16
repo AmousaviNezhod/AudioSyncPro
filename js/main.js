@@ -328,19 +328,11 @@
         try { processApi.stderr(server.pid, onServerStderr); } catch (e) {}
         try { processApi.onquit(server.pid, onServerQuit); } catch (e) {}
 
-        // Send an immediate ping. This is the most reliable startup handshake
-        // because it confirms both stdin and stdout are connected.
-        try {
-            var pingLine = JSON.stringify({ action: "ping", request_id: "asp_startup" }) + "\n";
-            processApi.stdin(server.pid, pingLine);
-        } catch (e) {
-            return failStart("could not write startup ping: " + e.message);
-        }
-
-        // If we do not get any response within 30 seconds, give up.
-        // (The onefile executable may need a few seconds to extract on first run.)
+        // The executable writes "server started" to stderr once it is ready.
+        // That signal is the cleanest startup handshake because it does not
+        // race with later sync/normalize requests.
         server.startTimeout = setTimeout(function () {
-            failStart("server did not respond to startup ping in time");
+            failStart("server did not start in time");
         }, 30000);
     }
 
