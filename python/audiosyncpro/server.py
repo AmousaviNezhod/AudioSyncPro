@@ -27,16 +27,39 @@ def _notify_startup() -> None:
             pass
 
 
+_stdout_broken = False
+
+
+def _safe_print_exc() -> None:
+    """Print traceback to stderr without failing if stderr is closed."""
+    try:
+        traceback.print_exc(file=sys.stderr)
+    except Exception:
+        pass
+
+
 def send_response(obj: dict) -> None:
-    sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
-    sys.stdout.flush()
+    global _stdout_broken
+    if _stdout_broken:
+        return
+    try:
+        sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
+        sys.stdout.flush()
+    except (BrokenPipeError, OSError):
+        # The panel/host closed the stdio pipe. Stop sending output.
+        _stdout_broken = True
 
 
 def run_server() -> int:
     _notify_startup()
     while True:
+        if _stdout_broken:
+            break
         try:
-            line = sys.stdin.readline()
+            try:
+                line = sys.stdin.readline()
+            except (BrokenPipeError, OSError):
+                break
             if not line:
                 break
             line = line.strip()
@@ -66,7 +89,7 @@ def run_server() -> int:
                     result["request_id"] = request_id
                 send_response(result)
             except Exception as e:
-                traceback.print_exc(file=sys.stderr)
+                _safe_print_exc()
                 send_response({"success": False, "error": str(e), "traceback": traceback.format_exc()[:500]})
         except KeyboardInterrupt:
             break
