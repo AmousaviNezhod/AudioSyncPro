@@ -299,30 +299,34 @@ def analyze_clip(clip: dict, ffmpeg_path: str, settings) -> TimelineClip:
     if max_offset <= 0:
         max_offset = 30.0
 
-    # For coarse search we need the first (max_offset + max_analyze) seconds of the
-    # source media so we can locate any offset within [-max_offset, +max_offset].
-    duration = media_info.duration_seconds if media_info and media_info.duration_seconds > 0 else clip.get("durationSeconds")
-    if duration is None or duration <= 0:
-        duration = max_offset + max_analyze
-    coarse_duration = min(float(duration), max_offset + max_analyze)
+    in_point = float(clip.get("inPointSeconds", 0.0) or 0.0)
+    out_point = float(clip.get("outPointSeconds", 0.0) or 0.0)
+    if out_point <= in_point and media_info and media_info.duration_seconds > 0:
+        out_point = float(media_info.duration_seconds)
+
+    # Coarse search window: centered on the clip's in-point so the actual audio
+    # of the clip is covered, with enough margin to search [-max_offset, +max_offset].
+    media_duration = float(media_info.duration_seconds if media_info and media_info.duration_seconds > 0 else 0.0)
+    if media_duration <= 0:
+        media_duration = float(clip.get("durationSeconds") or 0.0)
+    if media_duration <= 0:
+        media_duration = 2.0 * max_offset + max_analyze
+
+    coarse_start = max(0.0, in_point - max_offset)
+    coarse_duration = min(media_duration - coarse_start, 2.0 * max_offset + max_analyze)
     if coarse_duration < 1.0:
-        coarse_duration = max_offset + max_analyze
+        coarse_duration = 2.0 * max_offset + max_analyze
 
     timeout = max(300.0, coarse_duration * 0.25 + 60.0)
     coarse_samples = extract_audio(
         ffmpeg_path,
         clip["mediaPath"],
         sample_rate=coarse_sr,
-        start_seconds=0.0,
+        start_seconds=coarse_start,
         duration_seconds=coarse_duration,
         mono=True,
         timeout=timeout,
     )
-
-    in_point = float(clip.get("inPointSeconds", 0.0) or 0.0)
-    out_point = float(clip.get("outPointSeconds", 0.0) or 0.0)
-    if out_point <= in_point and media_info.duration_seconds > 0:
-        out_point = float(media_info.duration_seconds)
 
     gain_db = 0.0
     max_volume = None

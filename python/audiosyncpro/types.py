@@ -50,9 +50,9 @@ class SyncSettings:
     max_offset_seconds: float = 30.0
     fine_search_seconds: float = 2.0
     match_threshold: float = 0.45
-    min_peak_ratio: float = 1.3
+    min_peak_ratio: float = 1.005
     min_z_score: float = 3.0
-    min_overlap_ratio: float = 0.1
+    min_overlap_ratio: float = 0.05
     normalize_audio: bool = False
     target_peak_db: float = -1.0
     use_creation_time_coarse: bool = False
@@ -60,14 +60,23 @@ class SyncSettings:
     drift_min_duration: float = 60.0
     drift_window_seconds: float = 10.0
     drift_hop_seconds: float = 5.0
-    place_on_tracks: bool = True
+    place_on_tracks: bool = False
     ffmpeg_path: str = "ffmpeg"
 
     def effective_sample_rate(self) -> int:
         return int(self.sample_rate)
 
     def effective_coarse_sample_rate(self) -> int:
-        return int(self.coarse_sample_rate)
+        """Return a coarse sample rate that keeps the coarse search buffer under ~4M samples."""
+        desired = int(self.coarse_sample_rate)
+        max_offset = max(0.0, float(self.max_offset_seconds))
+        max_analyze = max(1.0, float(self.max_analyze_seconds))
+        max_samples = 4_000_000
+        min_coarse = 100
+        total_seconds = 2.0 * max_offset + max_analyze
+        if total_seconds * desired > max_samples and total_seconds > 0:
+            return max(min_coarse, int(max_samples // total_seconds))
+        return desired
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "SyncSettings":
@@ -106,9 +115,9 @@ class SyncSettings:
 
         # Preset defaults aligned with the UI presets.
         preset_defaults = {
-            "fast": {"sample_rate": 8000, "coarse_sample_rate": 1000, "max_analyze_seconds": 20.0, "max_offset_seconds": 10.0, "fine_search_seconds": 1.0, "match_threshold": 0.35, "min_peak_ratio": 1.3},
-            "balanced": {"sample_rate": 16000, "coarse_sample_rate": 1000, "max_analyze_seconds": 40.0, "max_offset_seconds": 30.0, "fine_search_seconds": 2.0, "match_threshold": 0.40, "min_peak_ratio": 1.3},
-            "accurate": {"sample_rate": 22050, "coarse_sample_rate": 2000, "max_analyze_seconds": 80.0, "max_offset_seconds": 60.0, "fine_search_seconds": 3.0, "match_threshold": 0.45, "min_peak_ratio": 1.4},
+            "fast": {"sample_rate": 8000, "coarse_sample_rate": 1000, "max_analyze_seconds": 20.0, "max_offset_seconds": 10.0, "fine_search_seconds": 1.0, "match_threshold": 0.35, "min_peak_ratio": 1.005},
+            "balanced": {"sample_rate": 16000, "coarse_sample_rate": 1000, "max_analyze_seconds": 40.0, "max_offset_seconds": 30.0, "fine_search_seconds": 2.0, "match_threshold": 0.40, "min_peak_ratio": 1.005},
+            "accurate": {"sample_rate": 22050, "coarse_sample_rate": 2000, "max_analyze_seconds": 80.0, "max_offset_seconds": 60.0, "fine_search_seconds": 3.0, "match_threshold": 0.45, "min_peak_ratio": 1.005},
             "custom": {},
         }
         defaults = preset_defaults.get(preset, preset_defaults["balanced"])
@@ -121,7 +130,7 @@ class SyncSettings:
             max_offset_seconds=_get("maxOffset", "max_offset_seconds", default=defaults.get("max_offset_seconds", 30.0), coerce=float),
             fine_search_seconds=_get("fineSearchSeconds", "fine_search_seconds", default=defaults.get("fine_search_seconds", 2.0), coerce=float),
             match_threshold=_get("matchThreshold", "match_threshold", default=defaults.get("match_threshold", 0.45), coerce=float),
-            min_peak_ratio=_get("minPeakRatio", "min_peak_ratio", default=defaults.get("min_peak_ratio", 1.3), coerce=float),
+            min_peak_ratio=_get("minPeakRatio", "min_peak_ratio", default=defaults.get("min_peak_ratio", 1.005), coerce=float),
             min_z_score=_get("minZScore", "min_z_score", default=3.0, coerce=float),
             min_overlap_ratio=_get("minOverlapRatio", "min_overlap_ratio", default=0.1, coerce=float),
             normalize_audio=_get("normalizeAudio", "normalize_audio", default=False, coerce=_bool),

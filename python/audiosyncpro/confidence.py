@@ -51,8 +51,8 @@ def compute_confidence(
 ) -> Tuple[float, Dict[str, Any]]:
     """Combine metrics into a single confidence score and return diagnostics."""
     pearson_c = float(max(0.0, min(1.0, pearson)))
-    # Normalize peak_ratio: 1.3 -> 0, 5 -> 1.
-    pr_c = max(0.0, min(1.0, (peak_ratio - 1.3) / 3.7))
+    # Normalize peak_ratio: 1.005 -> 0, 5 -> 1.
+    pr_c = max(0.0, min(1.0, (peak_ratio - 1.005) / 3.995))
     # Normalize z_score: 3 -> 0, 10 -> 1.
     z_c = max(0.0, min(1.0, (z_score - 3.0) / 7.0))
     ov_c = float(max(0.0, min(1.0, overlap)))
@@ -76,7 +76,7 @@ def is_match_accepted(
 ) -> bool:
     if confidence < thresholds.get("match_threshold", 0.45):
         return False
-    if peak_ratio < thresholds.get("min_peak_ratio", 1.3):
+    if peak_ratio < thresholds.get("min_peak_ratio", 1.005):
         return False
     if z_score < thresholds.get("min_z_score", 3.0):
         return False

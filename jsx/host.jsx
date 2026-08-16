@@ -93,6 +93,20 @@ var host = host || {};
         return 0;
     }
 
+    function getClipInPointSeconds(clip) {
+        try {
+            return parseFloat(clip.inPoint.seconds);
+        } catch (e) {}
+        return 0;
+    }
+
+    function getClipOutPointSeconds(clip) {
+        try {
+            return parseFloat(clip.outPoint.seconds);
+        } catch (e) {}
+        return 0;
+    }
+
     function getTrackEndSeconds(track) {
         try {
             if (track.clips && track.clips.numItems > 0) {
@@ -288,6 +302,8 @@ var host = host || {};
                 mediaPath: getClipPath(clip),
                 startSeconds: getClipStartSeconds(clip),
                 durationSeconds: getClipDurationSeconds(clip),
+                inPointSeconds: getClipInPointSeconds(clip),
+                outPointSeconds: getClipOutPointSeconds(clip),
                 trackIndex: trackIndex,
                 clipIndex: clipIndex,
                 isAudio: isAudio
@@ -314,9 +330,12 @@ var host = host || {};
                 if (op.type !== "move" || typeof op.newTrackIndex !== "number") continue;
                 var isAudio = op.isAudio === true;
                 if (isAudio) {
-                    if (op.newTrackIndex > maxAudioTrack) maxAudioTrack = op.newTrackIndex;
+                    var aIdx = (typeof op.newAudioTrackIndex === "number") ? op.newAudioTrackIndex : op.newTrackIndex;
+                    if (aIdx > maxAudioTrack) maxAudioTrack = aIdx;
                 } else {
                     if (op.newTrackIndex > maxVideoTrack) maxVideoTrack = op.newTrackIndex;
+                    var aIdx2 = (typeof op.newAudioTrackIndex === "number") ? op.newAudioTrackIndex : op.newTrackIndex;
+                    if (aIdx2 > maxAudioTrack) maxAudioTrack = aIdx2;
                 }
             }
             if (maxVideoTrack < 0 && maxAudioTrack < 0) return true;
@@ -442,7 +461,7 @@ var host = host || {};
             }
 
             var targetVTrack = (op.newTrackIndex !== undefined) ? op.newTrackIndex : origTrackIndex;
-            var targetATrack = targetVTrack;
+            var targetATrack = (op.newAudioTrackIndex !== undefined) ? op.newAudioTrackIndex : targetVTrack;
             var projectItem = null;
             try { projectItem = clip.projectItem; } catch (e) {}
             if (!projectItem) return { success: false, error: "Clip has no project item; cannot move" };
@@ -472,7 +491,16 @@ var host = host || {};
 
             // Find original audio before any modifications.
             var origAudio = null;
-            try { if (!isAudio) origAudio = findLinkedAudioClip(seq, op); } catch (e) {}
+            var origAudioTrackIndex = -1;
+            try {
+                if (!isAudio) {
+                    origAudio = findLinkedAudioClip(seq, op);
+                    if (origAudio) origAudioTrackIndex = getAudioTrackIndex(seq, origAudio);
+                }
+            } catch (e) {}
+            if (!isAudio && op.newAudioTrackIndex === undefined && origAudioTrackIndex >= 0) {
+                targetATrack = origAudioTrackIndex;
+            }
 
             var vTrack = seq.videoTracks[targetVTrack];
             var aTrack = seq.audioTracks[targetATrack];
@@ -620,6 +648,18 @@ var host = host || {};
             }
         }
         return false;
+    }
+
+    function getAudioTrackIndex(seq, audioClip) {
+        try {
+            for (var ti = 0; ti < seq.audioTracks.numTracks; ti++) {
+                var track = seq.audioTracks[ti];
+                for (var ci = 0; ci < track.clips.numItems; ci++) {
+                    if (track.clips[ci] === audioClip) return ti;
+                }
+            }
+        } catch (e) {}
+        return -1;
     }
 
     function findLinkedAudioClip(seq, op) {

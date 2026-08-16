@@ -55,6 +55,14 @@ def _pairwise_sync(
         ref_c_proc = preprocess(ref_c, target_rms=0.1, pre_emphasis_coeff=0.97)
         tgt_c_proc = preprocess(tgt_c, target_rms=0.1, pre_emphasis_coeff=0.97)
 
+        # Primary: direct GCC-PHAT on the coarse signals (most accurate when it works).
+        if len(ref_c) <= 4_000_000 and len(tgt_c) <= 4_000_000:
+            try:
+                gcc_coarse_res = gcc_phat(ref_c_proc, tgt_c_proc, coarse_sr, max_offset_seconds=max_offset)
+                coarse_candidates.append((gcc_coarse_res["offset_seconds"], "gcc_phat", gcc_coarse_res["correlation"]))
+            except Exception:
+                pass
+
         try:
             env_res = envelope_correlation(ref_c_proc, tgt_c_proc, coarse_sr, max_offset_seconds=max_offset)
             coarse_candidates.append((env_res["offset_seconds"], "envelope", env_res["correlation"]))
@@ -96,23 +104,26 @@ def _pairwise_sync(
         try:
             ref_start = min(max(0.0, -coarse_offset) + ref_in, ref_dur)
             tgt_start = min(max(0.0, coarse_offset) + tgt_in, tgt_dur)
-            overlap_dur = min(ref_dur - ref_start, tgt_dur - tgt_start, fine_dur)
-            if overlap_dur < 0.5:
+            ref_extract_dur = min(ref_dur - ref_start, fine_dur)
+            tgt_extract_dur = min(tgt_dur - tgt_start, fine_dur)
+            if ref_extract_dur < 0.5 or tgt_extract_dur < 0.5:
                 ref_start = ref_in
                 tgt_start = tgt_in
-                overlap_dur = min(ref_dur - ref_start, tgt_dur - tgt_start, fine_dur)
-            if overlap_dur < 0.1:
+                ref_extract_dur = min(ref_dur - ref_start, fine_dur)
+                tgt_extract_dur = min(tgt_dur - tgt_start, fine_dur)
+            if ref_extract_dur < 0.1 or tgt_extract_dur < 0.1:
                 continue
 
+            overlap_dur = min(ref_extract_dur, tgt_extract_dur)
             timeout = max(300.0, overlap_dur * 10.0)
-            ref_fine = extract_audio(ffmpeg_path, ref.media_path, sample_rate=sr, start_seconds=ref_start, duration_seconds=overlap_dur, mono=True, timeout=timeout)
-            tgt_fine = extract_audio(ffmpeg_path, target.media_path, sample_rate=sr, start_seconds=tgt_start, duration_seconds=overlap_dur, mono=True, timeout=timeout)
+            ref_fine = extract_audio(ffmpeg_path, ref.media_path, sample_rate=sr, start_seconds=ref_start, duration_seconds=ref_extract_dur, mono=True, timeout=timeout)
+            tgt_fine = extract_audio(ffmpeg_path, target.media_path, sample_rate=sr, start_seconds=tgt_start, duration_seconds=tgt_extract_dur, mono=True, timeout=timeout)
             ref_fine = preprocess(ref_fine, target_rms=0.1, pre_emphasis_coeff=0.97)
             tgt_fine = preprocess(tgt_fine, target_rms=0.1, pre_emphasis_coeff=0.97)
 
             fine_res = gcc_phat(ref_fine, tgt_fine, sr, max_offset_seconds=fine_search_total)
-            score = abs(fine_res["raw_peak"])
-            if score > best_score:
+            score = fine_res["correlation"]
+            if score > best_score + 1e-7:
                 best_score = score
                 best_candidate = coarse_offset
                 chosen_coarse_offset = coarse_offset
@@ -352,8 +363,8 @@ def process_sync_request(request: dict) -> dict:
         offsets, _ = optimize_offsets([c.id for c in comp_clips], edges, settings.effective_sample_rate())
         group_offsets.update(offsets)
 
-    # Build operations.
-    operations = build_plan(analyzed, group_offsets, groups, orphans, settings)
+    # Build operations only when at least one sync group was found.
+    operations = build_plan(analyzed, group_offsets, groups, orphans, settings) if groups else []
 
     # Sync results for UI.
     sync_results = []

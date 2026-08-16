@@ -99,14 +99,15 @@ def energy_envelope(samples: np.ndarray, sr: float, target_sr: float = 400.0, wi
     window_samples = max(1, int(round(window_ms * sr / 1000.0)))
     hop_samples = max(1, int(round(sr / target_sr)))
     half = window_samples // 2
-    pad = np.pad(x ** 2, (half, half), mode="constant", constant_values=0.0)
-    cum = np.cumsum(pad, dtype=np.float64)
-    max_start = len(x) - 1
-    starts = np.arange(0, len(x), hop_samples)
-    starts = starts[starts <= max_start]
-    ends = starts + window_samples
-    ends = np.minimum(ends, len(cum))
-    counts = ends - starts
+    x2 = x ** 2
+    cum = np.concatenate(([0.0], np.cumsum(x2, dtype=np.float64)))
+    n = len(x)
+    starts = np.arange(0, n, hop_samples)
+    left = starts - half
+    right = left + window_samples
+    left = np.clip(left, 0, n)
+    right = np.clip(right, 0, n)
+    counts = right - left
     counts = np.where(counts > 0, counts, 1)
-    power = (cum[ends] - cum[starts]) / counts
+    power = (cum[right] - cum[left]) / counts
     return np.sqrt(power + 1e-12)

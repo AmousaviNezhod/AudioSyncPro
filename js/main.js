@@ -394,7 +394,9 @@
                 log((i + 1) + ". " + clips[i].name + " | track " + clips[i].trackIndex + " | start " + clips[i].startSeconds.toFixed(3) + "s");
             }
 
-            // Auto-raise maxOffset so the engine can search across the full timeline span.
+            // Auto-raise maxOffset so the engine can search across the timeline span,
+            // but cap at 12000s (~3h20m) to keep extraction/memory reasonable unless the user
+            // explicitly sets a larger value in custom mode.
             var maxSpan = 0.0;
             if (clips.length > 1) {
                 var minStart = Infinity, maxStart = -Infinity;
@@ -405,9 +407,15 @@
                 }
                 maxSpan = maxStart - minStart;
             }
-            if (settings.maxOffset < maxSpan + 60.0) {
-                settings.maxOffset = Math.ceil(maxSpan + 60.0);
-                log("حداکثر آفست برای پوشش کلیپ‌ها به " + settings.maxOffset + " ثانیه افزایش یافت", "info");
+            var desiredMaxOffset = Math.ceil(maxSpan + 60.0);
+            var effectiveMaxOffset = Math.min(desiredMaxOffset, 12000.0);
+            if (settings.maxOffset < effectiveMaxOffset) {
+                settings.maxOffset = effectiveMaxOffset;
+                if (desiredMaxOffset > 12000.0) {
+                    log("پخش تایم‌لاین خیلی بزرگ است; حداکثر آفست خودکار به ۱۲۰۰۰ ثانیه محدود شد (برای جستجوی بیشتر، حالت سفارشی و maxOffset بالاتر تنظیم کنید)", "warn");
+                } else {
+                    log("حداکثر آفست برای پوشش کلیپ‌ها به " + settings.maxOffset + " ثانیه افزایش یافت", "info");
+                }
             }
 
             AudioSyncProUI.setProgress(30, "تحلیل صدا در Python...");
@@ -426,6 +434,19 @@
                 var operations = resp.operations || (resp.data && resp.data.operations) || [];
                 var groups = resp.groups || (resp.data && resp.data.groups) || [];
                 log("گروه‌های سینک: " + groups.length, "info");
+                if (groups.length === 0) {
+                    AudioSyncProUI.setBusy(false);
+                    AudioSyncProUI.hideProgress();
+                    AudioSyncProUI.setStatus("هیچ گروه سینکی یافت نشد - کلیپ‌ها احتمالاً همپوشانی ندارند", "warn");
+                    log("هیچ گروه سینکی یافت نشد. کلیپ‌ها ممکن است صدای مشترک نداشته باشند یا آفست از محدوده جستجو خارج باشد.", "warn");
+                    return;
+                }
+                if (operations.length === 0) {
+                    AudioSyncProUI.setBusy(false);
+                    AudioSyncProUI.hideProgress();
+                    AudioSyncProUI.setStatus("سینک انجام شد - نیازی به جابه‌جایی نیست", "info");
+                    return;
+                }
                 callHost("host.applyPlan", { operations: operations }, function (res) {
                     AudioSyncProUI.setBusy(false);
                     AudioSyncProUI.setProgress(100, "تمام");

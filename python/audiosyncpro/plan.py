@@ -63,7 +63,7 @@ def build_plan(
             if normalize_audio and clip.gain_db:
                 gain_db = clip.gain_db
 
-            operations.append({
+            op = {
                 "type": "move",
                 "id": clip.id,
                 "name": clip.name,
@@ -74,7 +74,10 @@ def build_plan(
                 "newStartSeconds": new_start,
                 "newTrackIndex": new_track,
                 "gainDb": gain_db,
-            })
+            }
+            if place_on_tracks:
+                op["newAudioTrackIndex"] = new_track
+            operations.append(op)
 
         if group_end > max_group_end:
             max_group_end = group_end
@@ -93,7 +96,7 @@ def build_plan(
         dur = clip.duration_seconds if clip.duration_seconds > 0 else 0.0
         new_track = leftover_track if place_on_tracks else clip.track_index
         gain_db = clip.gain_db if normalize_audio and clip.gain_db else 0.0
-        operations.append({
+        op = {
             "type": "move",
             "id": clip.id,
             "name": clip.name,
@@ -104,7 +107,10 @@ def build_plan(
             "newStartSeconds": cursor,
             "newTrackIndex": new_track,
             "gainDb": gain_db,
-        })
+        }
+        if place_on_tracks:
+            op["newAudioTrackIndex"] = new_track
+        operations.append(op)
         cursor += dur
         if place_on_tracks:
             leftover_track += 1
